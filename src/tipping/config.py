@@ -43,15 +43,15 @@ class SimConfig(_Frozen):
         Master seed from which the ramp and control seeds are derived.
     """
 
-    dt: float = Field(0.01, gt=0.0)
-    sample_every: int = Field(50, ge=1)
-    sigma: float = Field(0.05, ge=0.0)
+    dt: float = Field(default=0.01, gt=0.0)
+    sample_every: int = Field(default=50, ge=1)
+    sigma: float = Field(default=0.05, ge=0.0)
     x0: float = 1.0
     r_start: float = 0.0
     r_end: float = -0.6
-    duration: float = Field(2000.0, gt=0.0)
-    n_runs: int = Field(300, ge=1)
-    seed: int = Field(42, ge=0)
+    duration: float = Field(default=2000.0, gt=0.0)
+    n_runs: int = Field(default=300, ge=1)
+    seed: int = Field(default=42, ge=0)
 
     @model_validator(mode="after")
     def _duration_covers_a_sample(self) -> SimConfig:
@@ -107,13 +107,13 @@ class IndicatorConfig(_Frozen):
         False-positive rate at which the true-positive rate is reported.
     """
 
-    window: int = Field(400, ge=3)
-    detrend_window: int = Field(100, ge=1)
-    analysis_fraction: float = Field(0.6, gt=0.0, le=1.0)
-    min_points: int = Field(15, ge=2)
-    tau_step: int | None = Field(None, ge=1)
+    window: int = Field(default=400, ge=3)
+    detrend_window: int = Field(default=100, ge=1)
+    analysis_fraction: float = Field(default=0.6, gt=0.0, le=1.0)
+    min_points: int = Field(default=15, ge=2)
+    tau_step: int | None = Field(default=None, ge=1)
     tip_threshold: float = 0.0
-    fpr: float = Field(0.05, gt=0.0, lt=1.0)
+    fpr: float = Field(default=0.05, gt=0.0, lt=1.0)
 
     def resolved_step(self) -> int:
         """Return the subsampling step for Kendall's tau."""
@@ -187,20 +187,20 @@ class SweepConfig(_Frozen):
 
     sigmas: list[float] = Field(default_factory=lambda: [0.03, 0.05, 0.10, 0.15, 0.30])
     durations: list[float] = Field(default_factory=lambda: [100.0, 200.0, 400.0, 1000.0, 2000.0])
-    n_runs: int = Field(300, ge=1)
+    n_runs: int = Field(default=300, ge=1)
     seeds: list[int] = Field(default_factory=lambda: [1, 2, 3])
-    dt: float = Field(0.01, gt=0.0)
-    sample_every: int = Field(50, ge=1)
+    dt: float = Field(default=0.01, gt=0.0)
+    sample_every: int = Field(default=50, ge=1)
     x0: float = 1.0
     r_start: float = 0.0
     r_end: float = -0.6
-    window_fraction: float = Field(0.10, gt=0.0, le=1.0)
-    min_window: int = Field(10, ge=3)
-    analysis_fraction: float = Field(0.6, gt=0.0, le=1.0)
-    min_points: int = Field(15, ge=2)
+    window_fraction: float = Field(default=0.10, gt=0.0, le=1.0)
+    min_window: int = Field(default=10, ge=3)
+    analysis_fraction: float = Field(default=0.6, gt=0.0, le=1.0)
+    min_points: int = Field(default=15, ge=2)
     tip_threshold: float = 0.0
-    fpr: float = Field(0.05, gt=0.0, lt=1.0)
-    n_boot: int = Field(1000, ge=1)
+    fpr: float = Field(default=0.05, gt=0.0, lt=1.0)
+    n_boot: int = Field(default=1000, ge=1)
     n_jobs: int = -1
 
     def sim_config(self, sigma: float, duration: float, seed: int) -> SimConfig:
