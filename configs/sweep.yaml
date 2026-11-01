@@ -1,0 +1,26 @@
+# Noise-by-duration sweep: one experiment (300 ramp runs vs 300 control runs) per
+# (sigma, duration, seed). The rolling window is derived per cell in code:
+#   window = max(min_window, round(window_fraction * duration / sample_interval))
+#   detrend_window = max(5, window // 4)
+sigmas: [0.03, 0.05, 0.10, 0.15, 0.30]       # noise amplitudes
+durations: [100, 200, 400, 1000, 2000]       # ramp lengths in time units
+n_runs: 300                                  # per group (ramp and control) and cell
+seeds: [1, 2, 3]                             # independent replications of every cell
+
+# Same simulation settings as configs/default.yaml
+dt: 0.01
+sample_every: 50                             # sampling interval 0.5
+x0: 1.0
+r_start: 0.0
+r_end: -0.6
+
+# Window rule and evaluation settings
+window_fraction: 0.10
+min_window: 10
+analysis_fraction: 0.6
+min_points: 15
+tip_threshold: 0.0
+fpr: 0.05
+
+n_boot: 1000                                 # bootstrap resamples for the summary CIs
+n_jobs: -1                                   # worker processes (-1: all cores, 1: serial)
