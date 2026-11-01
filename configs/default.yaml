@@ -1,0 +1,20 @@
+# Baseline experiment: slow ramp of r from 0 to -0.6 (the fold is crossed at r = -0.3849),
+# 300 ramp runs against 300 control runs at constant r = 0.
+sim:
+  dt: 0.01            # integration step
+  sample_every: 50    # one stored sample every 50 steps (sampling interval 0.5)
+  sigma: 0.05         # noise amplitude
+  x0: 1.0             # start on the upper branch at r = 0
+  r_start: 0.0
+  r_end: -0.6
+  duration: 2000      # ramp length in time units
+  n_runs: 300         # per group (ramp and control)
+  seed: 42            # master seed; ramp and control get independent derived seeds
+
+indicators:
+  window: 400            # rolling window in samples (200 time units = 10% of the ramp)
+  detrend_window: 100    # moving-average detrending window in samples (50 time units)
+  analysis_fraction: 0.6 # analyse at most the first 60% of each trajectory
+  min_points: 15         # runs with fewer subsampled points are invalid
+  tip_threshold: 0.0     # a run has tipped at the first sample with x < threshold
+  fpr: 0.05              # false-positive rate for the TPR metric
