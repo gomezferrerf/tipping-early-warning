@@ -92,15 +92,36 @@ def inch(value: float) -> Emu:
     return Emu(round(value * 914400))
 
 
-def es_num(value: float, decimals: int = 2) -> str:
-    """Format a number with Spanish decimal comma."""
-    return f"{value:.{decimals}f}".replace(".", ",")
+def fmt_es(value: float, decimals: int = 2) -> str:
+    """Format a number with a Spanish decimal comma, never rounding up to ``1,00``.
+
+    Two decimals by default; if that would show ``1,00`` for a value that is not exactly 1
+    (e.g. 0.9998), switch to four decimals so the slide does not overstate the result.
+    """
+    text = f"{value:.{decimals}f}"
+    if float(text) == 1.0 and value != 1.0 and value < 1.0:
+        text = f"{value:.4f}"
+    return text.replace(".", ",")
 
 
 def load_key_numbers() -> dict[str, Any]:
     """Read ``results/key_numbers.json`` (single source of truth for every number)."""
     data: dict[str, Any] = json.loads(KEY_NUMBERS_PATH.read_text(encoding="utf-8"))
     return data
+
+
+def sweep_cell(kn: dict[str, Any], sigma: float, duration: float) -> dict[str, Any]:
+    """Return the sweep-summary row for one (sigma, duration) cell."""
+    for row in kn["sweep_summary"]["rows"]:
+        if math.isclose(row["sigma"], sigma) and math.isclose(row["duration"], duration):
+            cell: dict[str, Any] = row
+            return cell
+    raise KeyError((sigma, duration))
+
+
+def sweep_axis(kn: dict[str, Any], key: str) -> list[float]:
+    """Sorted unique values of ``sigma`` or ``duration`` in the sweep summary."""
+    return sorted({float(row[key]) for row in kn["sweep_summary"]["rows"]})
 
 
 def load_notes() -> dict[str, str]:
@@ -516,10 +537,11 @@ def slide_03_tipping(prs: PresentationType) -> Slide:
     """Build "what is a tipping point": one sentence, a schematic jump and three example chips."""
     slide = new_slide(prs, "¿Qué es un punto de quiebre?", 3)
     add_text(
-        slide, MARGIN, 1.9, 6.0, 3.0,
-        "Un cambio **pequeño** causa un salto **grande**.", 40, INK, name="Frase",
+        slide, MARGIN, 1.95, 6.0, 3.2,
+        "Un cambio **pequeño** causa un salto **grande**.", 50, INK,
+        anchor=MSO_ANCHOR.MIDDLE, name="Frase",
     )  # fmt: skip
-    cx, cy, cw, ch = 7.4, 1.75, 5.2, 3.3
+    cx, cy, cw, ch = 7.7, 1.95, 4.9, 3.2
     pts = _jump_curve(cw, ch)
     builder = slide.shapes.build_freeform(inch(cx + pts[0][0]), inch(cy + pts[0][1]))
     builder.add_line_segments([(inch(cx + px), inch(cy + py)) for px, py in pts[1:]], close=False)
@@ -527,22 +549,23 @@ def slide_03_tipping(prs: PresentationType) -> Slide:
     curve.name = "Esquema del salto"
     curve.fill.background()
     curve.line.color.rgb = rgb(INK)
-    curve.line.width = Pt(4)
+    curve.line.width = Pt(5)
     curve.shadow.inherit = False
     _drop_theme_effects(curve)
-    add_text(slide, cx, cy + 0.75, 2.8, 0.45, "cambio pequeño", SMALL_PT, MUTED, name="Etiqueta 1")
+    add_text(slide, cx, cy + 0.75, 3.2, 0.5, "cambio pequeño", BODY_PT, MUTED, name="Etiqueta 1")
     add_text(
-        slide, cx - 0.3, cy + 1.45, 3.4, 0.45, "salto grande", SMALL_PT, MUTED,
+        slide, cx - 0.2, cy + 1.6, 3.4, 0.5, "salto grande", BODY_PT, MUTED,
         align=PP_ALIGN.RIGHT, name="Etiqueta 2",
     )  # fmt: skip
-    chip_w, chip_h, chip_gap = 2.5, 0.65, 0.3
+    chip_gap = 0.5
+    chip_w = (CONTENT_W - 2 * chip_gap) / 3
     for i, label in enumerate(("clima", "ecosistemas", "mercados")):
         chip = add_shape(
-            slide, MSO_SHAPE.ROUNDED_RECTANGLE, MARGIN + i * (chip_w + chip_gap), 5.65,
-            chip_w, chip_h, fill=GRID, name=f"Ejemplo {label}",
+            slide, MSO_SHAPE.ROUNDED_RECTANGLE, MARGIN + i * (chip_w + chip_gap), 5.5,
+            chip_w, 0.95, fill=GRID, name=f"Ejemplo {label}",
         )  # fmt: skip
         chip.adjustments[0] = 0.5
-        shape_text(chip, label, SMALL_PT, INK)
+        shape_text(chip, label, BODY_PT, INK)
     return slide
 
 
@@ -688,7 +711,7 @@ def slide_11_experiment(prs: PresentationType, kn: dict[str, Any]) -> Slide:
     """Experiment design: ramp versus control."""
     base = kn["baseline"]
     n = int(base["n_runs"])
-    sigma = es_num(float(base["sigma"]), 2)
+    sigma = fmt_es(float(base["sigma"]))
 
     def below(slide: Slide, y: float) -> None:
         add_text(
@@ -713,9 +736,9 @@ def slide_12_results(prs: PresentationType, kn: dict[str, Any]) -> Slide:
         video_h=4.5, x=MARGIN, y=1.75,
     )  # fmt: skip
     stats = [
-        (es_num(float(base["auc_ar1"])), "AUC del AR(1)"),
-        (es_num(float(base["auc_var"])), "AUC de la varianza"),
-        (es_num(float(base["tpr_ar1"])), "TPR del AR(1) con 5 % de falsos positivos"),
+        (fmt_es(float(base["auc_ar1"])), "AUC del AR(1)"),
+        (fmt_es(float(base["auc_var"])), "AUC de la varianza"),
+        (fmt_es(float(base["tpr_ar1"])), "TPR del AR(1) con 5 % de falsos positivos"),
     ]
     x = MARGIN + vw + 0.6
     w = SLIDE_W - MARGIN - x
@@ -745,20 +768,33 @@ def slide_13_control(prs: PresentationType) -> Slide:
     )  # fmt: skip
 
 
-def slide_14_heatmap(prs: PresentationType) -> Slide:
-    """When it fails: AUC heatmap."""
+def slide_14_heatmap(prs: PresentationType, kn: dict[str, Any]) -> Slide:
+    """When it fails: AUC heatmap with two takeaways derived from the sweep table."""
+    sigmas = sweep_axis(kn, "sigma")
+    durations = sweep_axis(kn, "duration")
+    sigma_mid = sigmas[1]
+    sigma_hi = sigmas[-1]
+    short = fmt_es(sweep_cell(kn, sigma_mid, durations[0])["auc_ar1_mean"])
+    long_ = fmt_es(sweep_cell(kn, sigma_mid, durations[-1])["auc_ar1_mean"])
 
     def below(slide: Slide, y: float) -> None:
         add_text(
-            slide, MARGIN, y, CONTENT_W, 0.6,
-            "Con σ = 0,30 hasta el control cae solo (rayado).", BODY_PT, INK, name="Lectura",
+            slide, MARGIN, y, CONTENT_W, 0.5,
+            f"A σ = {fmt_es(sigma_mid)}, el AUC del AR(1) pasa de {short} (rampa corta) "
+            f"a {long_} (larga).",
+            SMALL_PT, INK, name="Lectura 1",
+        )  # fmt: skip
+        add_text(
+            slide, MARGIN, y + 0.55, CONTENT_W, 0.5,
+            f"Con σ = {fmt_es(sigma_hi)} hasta el control cae solo.", SMALL_PT, INK,
+            name="Lectura 2",
         )  # fmt: skip
 
     return figure_slide(
         prs, 14, "Rampas cortas y mucho ruido: señal perdida", FIG_DIR / "s14_heatmap.png",
         "Mapas de calor del AUC para AR(1) y varianza según ruido y duración de la rampa; "
         "las celdas rayadas indican que el control también cae solo.",
-        reserve=0.8, below=below,
+        reserve=1.3, below=below,
     )  # fmt: skip
 
 
@@ -866,7 +902,7 @@ def backup_04_limits(prs: PresentationType, number: int) -> Slide:
         slide, x, fy, SLIDE_W - MARGIN - x, 4.6,
         [
             "La ventana depende de la duración de la rampa.",
-            "Con σ = 0,30 el control también cae solo.",
+            f"Con σ = {fmt_es(sweep_axis(load_key_numbers(), 'sigma')[-1])} el control cae solo.",
             "Con ruido alto, muchas rampas caen antes del análisis (sesgo de supervivencia).",
         ],
         22, INK, space_after=16, name="Límites",
@@ -945,7 +981,7 @@ def build_deck(*, reveal_backups: bool = False) -> tuple[Path, list[str]]:
         ("11", lambda: slide_11_experiment(prs, kn)),
         ("12", lambda: slide_12_results(prs, kn)),
         ("13", lambda: slide_13_control(prs)),
-        ("14", lambda: slide_14_heatmap(prs)),
+        ("14", lambda: slide_14_heatmap(prs, kn)),
         ("15", lambda: slide_15_takeaways(prs)),
     ]
     for key, make in main:
