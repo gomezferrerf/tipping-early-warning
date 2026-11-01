@@ -19,6 +19,12 @@ data/
 results/
 deck/build/
 
+# Local artefacts
+*.bundle
+.env
+*.log
+coverage.xml
+
 # Editors and OS
 .vscode/
 .idea/

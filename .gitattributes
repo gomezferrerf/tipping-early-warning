@@ -1,0 +1,18 @@
+# Normalise line endings: LF in the repository, native on checkout.
+* text=auto
+
+# Shell-agnostic task files must keep LF so they parse identically everywhere.
+justfile text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Binary artefacts: never diff, never convert line endings.
+*.png binary
+*.jpg binary
+*.mp4 binary
+*.pptx binary
+*.pdf binary
+*.parquet binary
+
+# Lock file is generated; collapse it in diffs.
+uv.lock linguist-generated=true -diff
