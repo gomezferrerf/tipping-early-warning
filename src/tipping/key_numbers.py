@@ -1,7 +1,7 @@
 """Compute every number quoted in the talk and write ``results/key_numbers.json``.
 
 Single source of truth for the slides and the speech script: nothing is typed by hand.
-Run with ``uv run python deck/key_numbers.py`` after ``tipping sweep``.
+Run with ``uv run python -m tipping.key_numbers`` after ``tipping sweep``.
 """
 
 from __future__ import annotations

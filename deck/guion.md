@@ -554,7 +554,7 @@ Depende de qué ruido haya. Con ruido constante, mi barrido da a la varianza igu
 
 ### (e) Números para memorizar
 
-Todos salen de `results/key_numbers.json` (producido por `deck/key_numbers.py`), salvo los marcados como teóricos, que salen de `docs/math.md`, y los de B6, que salen de `results/confound.json` (tres semillas juntas, 900 corridas por grupo).
+Todos salen de `results/key_numbers.json` (producido por `src/tipping/key_numbers.py`), salvo los marcados como teóricos, que salen de `docs/math.md`, y los de B6, que salen de `results/confound.json` (tres semillas juntas, 900 corridas por grupo).
 
 | Concepto | Valor |
 | --- | --- |
