@@ -23,7 +23,7 @@ from numpy.typing import NDArray
 from tipping.confound import IndicatorTraces, indicator_traces
 from tipping.paths import results_dir
 from tipping.viz.labels import text
-from tipping.viz.style import PALETTE, Lang, apply_style, style_axes
+from tipping.viz.style import PALETTE, Lang, style_axes, style_params
 
 FloatArray = NDArray[np.float64]
 
@@ -198,6 +198,11 @@ def _draw_trace(
     ax.tick_params(labelsize=14)
 
 
+def _rc() -> dict[str, object]:
+    """Return the rc parameters of the figure: project look, regular-font math text."""
+    return {**style_params(), "mathtext.default": "regular"}
+
+
 def make_confound_figure(
     lang: Lang,
     out_dir: Path | None = None,
@@ -233,8 +238,18 @@ def make_confound_figure(
     pathlib.Path
         Path of the PNG file.
     """
-    apply_style()
-    mpl.rcParams["mathtext.default"] = "regular"
+    with mpl.rc_context(_rc()):  # type: ignore[arg-type]
+        return _draw_confound_figure(lang, out_dir, summary, traces, sigma_end)
+
+
+def _draw_confound_figure(
+    lang: Lang,
+    out_dir: Path | None,
+    summary: dict[str, Any] | None,
+    traces: IndicatorTraces | None,
+    sigma_end: float,
+) -> Path:
+    """Build and save the figure (must run inside the style context)."""
     data = load_summary() if summary is None else summary
     tr = indicator_traces(sigma_end, seed=TRACE_SEED) if traces is None else traces
 

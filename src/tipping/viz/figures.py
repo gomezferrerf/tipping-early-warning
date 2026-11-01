@@ -10,11 +10,13 @@ physics from the core modules (nothing is re-derived here).
 
 from __future__ import annotations
 
+import functools
 import math
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, ParamSpec, TypeVar
 
 import matplotlib as mpl
 import matplotlib.patheffects as pe
@@ -50,9 +52,11 @@ from tipping.paths import assets_dir, default_config_path, results_dir
 from tipping.simulate import Ramp, derive_seeds, first_crossing, simulate
 from tipping.theory import ou_acf, ou_variance
 from tipping.viz.labels import text
-from tipping.viz.style import PALETTE, Lang, apply_style, style_axes
+from tipping.viz.style import PALETTE, Lang, style_axes, style_params
 
 FloatArray = NDArray[np.float64]
+P = ParamSpec("P")
+R = TypeVar("R")
 
 SIZE_STD = (11.5, 5.75)
 """Slide canvas (inches, 2:1): the deck places figures about 11 in wide, so text keeps its size."""
@@ -95,26 +99,45 @@ _README_LANDSCAPE_RS = (0.0, -0.2, -FOLD_R, -0.5)
 # --------------------------------------------------------------------------------------------
 
 
-def _setup() -> None:
-    """Apply the project style (and regular-font math text) to matplotlib."""
-    apply_style()
-    mpl.rcParams.update(
-        {
-            "mathtext.default": "regular",
-            "font.size": FS_TICK,
-            "xtick.labelsize": FS_TICK,
-            "ytick.labelsize": FS_TICK,
-            "axes.labelsize": FS_NOTE,
-            "axes.titlesize": FS_TITLE,
-            "legend.fontsize": FS_TICK,
-        }
-    )
-    mpl.rcParams["hatch.linewidth"] = 1.2
+def _rc() -> dict[str, object]:
+    """Return the rc parameters of the figures: project look plus projector-size fonts."""
+    return {
+        **style_params(),
+        "mathtext.default": "regular",
+        "hatch.linewidth": 1.2,
+        "font.size": FS_TICK,
+        "xtick.labelsize": FS_TICK,
+        "ytick.labelsize": FS_TICK,
+        "axes.labelsize": FS_NOTE,
+        "axes.titlesize": FS_TITLE,
+        "legend.fontsize": FS_TICK,
+    }
+
+
+def styled(func: Callable[P, R]) -> Callable[P, R]:
+    """Run ``func`` inside ``matplotlib.rc_context`` with the figure style (no global state).
+
+    Parameters
+    ----------
+    func : callable
+        A function that builds and saves a figure.
+
+    Returns
+    -------
+    callable
+        The same function, with the style applied only while it runs.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        with mpl.rc_context(_rc()):  # type: ignore[arg-type]
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 def _new_figure(width: float, height: float) -> Figure:
     """Create an empty constrained-layout figure with the project background."""
-    _setup()
     fig = Figure(figsize=(width, height), layout="constrained")
     engine = fig.get_layout_engine()
     if isinstance(engine, ConstrainedLayoutEngine):
@@ -784,6 +807,7 @@ def _draw_tau_hist(
 # --------------------------------------------------------------------------------------------
 
 
+@styled
 def fig_hook(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30) -> Path:
     """``s01_hook.png``: a calm noisy series that suddenly falls to a new level.
 
@@ -811,6 +835,7 @@ def fig_hook(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30) -> Pa
     return _save(fig, out_dir or _default_dir(lang), "s01_hook.png")
 
 
+@styled
 def fig_landscapes(
     lang: Lang, out_dir: Path | None = None, *, rs: tuple[float, ...] = _LANDSCAPE_RS
 ) -> Path:
@@ -836,6 +861,7 @@ def fig_landscapes(
     return _save(fig, out_dir or _default_dir(lang), "s04_landscapes.png")
 
 
+@styled
 def fig_bifurcation(lang: Lang, out_dir: Path | None = None) -> Path:
     """``s05_bifurcation.png``: static bifurcation diagram with the ramp direction.
 
@@ -857,6 +883,7 @@ def fig_bifurcation(lang: Lang, out_dir: Path | None = None) -> Path:
     return _save(fig, out_dir or _default_dir(lang), "s05_bifurcation.png")
 
 
+@styled
 def fig_hysteresis(lang: Lang, out_dir: Path | None = None) -> Path:
     """``s07_hysteresis.png``: the bifurcation diagram with the two jumps forming a loop.
 
@@ -878,6 +905,7 @@ def fig_hysteresis(lang: Lang, out_dir: Path | None = None) -> Path:
     return _save(fig, out_dir or _default_dir(lang), "s07_hysteresis.png")
 
 
+@styled
 def fig_noise(lang: Lang, out_dir: Path | None = None) -> Path:
     """``s08_noise.png``: deterministic relaxation next to the same system with noise.
 
@@ -1027,6 +1055,7 @@ def _signal_figure(
     return fig
 
 
+@styled
 def fig_signal(
     lang: Lang,
     out_dir: Path | None = None,
@@ -1066,6 +1095,7 @@ def fig_signal(
     return _save(fig, out_dir or _default_dir(lang), filename)
 
 
+@styled
 def fig_experiment(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30) -> Path:
     """``s11_experiment.png``: one ramp series above one control series, same axes.
 
@@ -1130,6 +1160,7 @@ def fig_experiment(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30)
     return _save(fig, out_dir or _default_dir(lang), "s11_experiment.png")
 
 
+@styled
 def fig_results(lang: Lang, base: Baseline, out_dir: Path | None = None) -> Path:
     """``s12_results.png``: rolling variance and AR(1), ramp versus control.
 
@@ -1170,6 +1201,7 @@ def fig_results(lang: Lang, base: Baseline, out_dir: Path | None = None) -> Path
     return _save(fig, out_dir or _default_dir(lang), "s12_results.png")
 
 
+@styled
 def fig_control(lang: Lang, base: Baseline, out_dir: Path | None = None) -> Path:
     """``s13_control.png``: Kendall tau of the AR(1), ramp versus control, with the FPR threshold.
 
@@ -1389,6 +1421,7 @@ def _heat_figure(
     return fig
 
 
+@styled
 def fig_heatmap(
     lang: Lang,
     out_dir: Path | None = None,
@@ -1454,6 +1487,7 @@ def fig_heatmap(
     return _save(fig, out_dir or _default_dir(lang), filename)
 
 
+@styled
 def fig_tipped(
     lang: Lang,
     out_dir: Path | None = None,
@@ -1512,6 +1546,7 @@ def fig_tipped(
 # --------------------------------------------------------------------------------------------
 
 
+@styled
 def readme_bifurcation(lang: Lang, out_dir: Path) -> Path:
     """``fig_bifurcation.png``: four landscapes above the bifurcation diagram.
 
@@ -1538,6 +1573,7 @@ def readme_bifurcation(lang: Lang, out_dir: Path) -> Path:
     return _save(fig, out_dir, "fig_bifurcation.png")
 
 
+@styled
 def readme_results(lang: Lang, base: Baseline, out_dir: Path, *, n_runs: int = 30) -> Path:
     """``fig_results.png``: 2x2 panel (series, variance, AR(1), tau histogram).
 

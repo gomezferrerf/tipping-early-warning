@@ -42,39 +42,51 @@ PALETTE = Palette()
 FONT_FAMILY = ["Inter", "Segoe UI", "Calibri", "DejaVu Sans"]
 
 
-def apply_style() -> None:
-    """Set matplotlib rcParams for the project look (call once per script)."""
+def style_params() -> dict[str, object]:
+    """Return the matplotlib rc parameters of the project look.
+
+    Use it as ``with matplotlib.rc_context(style_params()):`` so the style applies to one figure
+    without touching the process-wide ``rcParams``.
+
+    Returns
+    -------
+    dict
+        rc parameter name to value.
+    """
     p = PALETTE
-    mpl.rcParams.update(
-        {
-            "figure.facecolor": p.background,
-            "savefig.facecolor": p.background,
-            "axes.facecolor": p.background,
-            "axes.edgecolor": p.muted,
-            "axes.labelcolor": p.ink,
-            "axes.titlecolor": p.ink,
-            "axes.titleweight": "regular",
-            "axes.spines.top": False,
-            "axes.spines.right": False,
-            "axes.grid": True,
-            "axes.grid.axis": "y",
-            "axes.axisbelow": True,
-            "grid.color": p.grid,
-            "grid.linewidth": 0.8,
-            "text.color": p.ink,
-            "xtick.color": p.muted,
-            "ytick.color": p.muted,
-            "font.family": "sans-serif",
-            "font.sans-serif": FONT_FAMILY,
-            "font.size": 14,
-            "axes.titlesize": 16,
-            "axes.labelsize": 14,
-            "legend.frameon": False,
-            "legend.fontsize": 13,
-            "lines.linewidth": 2.4,
-            "savefig.dpi": 200,
-        }
-    )
+    return {
+        "figure.facecolor": p.background,
+        "savefig.facecolor": p.background,
+        "axes.facecolor": p.background,
+        "axes.edgecolor": p.muted,
+        "axes.labelcolor": p.ink,
+        "axes.titlecolor": p.ink,
+        "axes.titleweight": "regular",
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "axes.grid.axis": "y",
+        "axes.axisbelow": True,
+        "grid.color": p.grid,
+        "grid.linewidth": 0.8,
+        "text.color": p.ink,
+        "xtick.color": p.muted,
+        "ytick.color": p.muted,
+        "font.family": "sans-serif",
+        "font.sans-serif": FONT_FAMILY,
+        "font.size": 14,
+        "axes.titlesize": 16,
+        "axes.labelsize": 14,
+        "legend.frameon": False,
+        "legend.fontsize": 13,
+        "lines.linewidth": 2.4,
+        "savefig.dpi": 200,
+    }
+
+
+def apply_style() -> None:
+    """Set the project look process-wide (kept for scripts; figures use :func:`style_params`)."""
+    mpl.rcParams.update(style_params())  # type: ignore[arg-type]
 
 
 def style_axes(ax: Axes, *, grid: bool = True) -> Axes:
