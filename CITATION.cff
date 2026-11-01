@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: "tipping-early-warning"
+abstract: >-
+  Can a noisy time series warn us before a tipping point? A simulation study of
+  early-warning signals (rolling variance and lag-1 autocorrelation) near the
+  saddle-node bifurcation of the bistable model dx = (r + x - x^3) dt + sigma dW,
+  with a control group and a sweep over noise level and ramp speed.
+authors:
+  - given-names: Fernando
+version: 0.1.0
+date-released: "2026-11-01"
+license: MIT
+keywords:
+  - dynamical systems
+  - bifurcation
+  - tipping points
+  - early warning signals
+  - critical slowing down
+  - stochastic processes
