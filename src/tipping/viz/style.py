@@ -13,6 +13,7 @@ from typing import Literal
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 
 Lang = Literal["es", "en"]
 
@@ -88,7 +89,7 @@ def style_axes(ax: Axes, *, grid: bool = True) -> Axes:
     return ax
 
 
-def new_figure(width: float = 13.33, height: float = 7.5) -> tuple[plt.Figure, Axes]:
+def new_figure(width: float = 13.33, height: float = 7.5) -> tuple[Figure, Axes]:
     """Create a 16:9 figure with one styled axes."""
     apply_style()
     fig, ax = plt.subplots(figsize=(width, height))
