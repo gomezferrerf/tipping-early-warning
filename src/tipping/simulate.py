@@ -103,6 +103,9 @@ class Trajectories:
         Number of integration steps between stored samples.
     seed : int
         Seed of the random generator.
+    sigma_end : float or None
+        Noise amplitude at ``t = duration`` if the amplitude was ramped, else ``None``
+        (constant noise ``sigma``).
     """
 
     t: FloatArray
@@ -112,6 +115,7 @@ class Trajectories:
     dt: float
     sample_every: int
     seed: int
+    sigma_end: float | None = None
 
     @property
     def n_samples(self) -> int:
@@ -154,11 +158,15 @@ def simulate(
     sample_every: int,
     x0: float,
     seed: int,
+    sigma_end: float | None = None,
 ) -> Trajectories:
     """Simulate independent runs of the stochastic bistable system.
 
     Uses the Euler-Maruyama scheme
     ``x_{n+1} = x_n + (r(t_n) + x_n - x_n**3) dt + sigma sqrt(dt) xi_n``, ``xi_n ~ N(0, 1)``.
+    If ``sigma_end`` is given, the noise amplitude ramps linearly in time from ``sigma`` at
+    ``t = 0`` to ``sigma_end`` at ``t = duration`` and the noise term of step ``n`` is
+    ``sigma(t_n) sqrt(dt) xi_n``; the random stream is consumed exactly as for constant noise.
     Steps are taken until the last multiple of ``sample_every`` not exceeding
     ``round(duration / dt)``.
 
@@ -178,6 +186,9 @@ def simulate(
         Initial state of every run.
     seed : int
         Seed for ``numpy.random.default_rng``; the output is deterministic given the seed.
+    sigma_end : float, optional
+        Final noise amplitude (``>= 0``). ``None`` (default) keeps the noise constant at
+        ``sigma``, bit-identical to the behaviour without this argument.
 
     Returns
     -------
@@ -187,11 +198,14 @@ def simulate(
     Raises
     ------
     ValueError
-        If ``sigma < 0``, ``n_runs < 1``, ``dt <= 0``, ``sample_every < 1`` or the duration is
-        shorter than one sampling interval.
+        If ``sigma < 0``, ``sigma_end < 0``, ``n_runs < 1``, ``dt <= 0``, ``sample_every < 1``
+        or the duration is shorter than one sampling interval.
     """
     if sigma < 0.0:
         msg = f"sigma must be non-negative, got {sigma!r}"
+        raise ValueError(msg)
+    if sigma_end is not None and sigma_end < 0.0:
+        msg = f"sigma_end must be non-negative, got {sigma_end!r}"
         raise ValueError(msg)
     if n_runs < 1 or sample_every < 1 or not dt > 0.0:
         msg = "n_runs and sample_every must be >= 1 and dt must be positive"
@@ -205,6 +219,11 @@ def simulate(
     n_steps = n_blocks * sample_every
     r_steps: list[float] = ramp.r_at(np.arange(n_steps, dtype=np.float64) * dt).tolist()
     amplitude = sigma * math.sqrt(dt)
+    amplitude_steps: FloatArray | None = None
+    if sigma_end is not None:
+        t_steps = np.arange(n_steps, dtype=np.float64) * dt
+        frac = np.clip(t_steps / ramp.duration, 0.0, 1.0)
+        amplitude_steps = (sigma + (sigma_end - sigma) * frac) * math.sqrt(dt)
 
     x = np.full(n_runs, float(x0))
     tmp = np.empty(n_runs)
@@ -213,7 +232,10 @@ def simulate(
     step = 0
     for block in range(n_blocks):
         noise = rng.standard_normal((sample_every, n_runs))
-        noise *= amplitude
+        if amplitude_steps is None:
+            noise *= amplitude
+        else:
+            noise *= amplitude_steps[block * sample_every : (block + 1) * sample_every, None]
         for i in range(sample_every):
             # x += (r + x - x**3) * dt + noise[i], written with preallocated buffers.
             np.multiply(x, x, out=tmp)
@@ -235,6 +257,7 @@ def simulate(
         dt=float(dt),
         sample_every=int(sample_every),
         seed=int(seed),
+        sigma_end=None if sigma_end is None else float(sigma_end),
     )
 
 

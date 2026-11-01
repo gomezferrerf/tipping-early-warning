@@ -130,3 +130,36 @@ def test_derive_seeds_are_distinct_and_deterministic() -> None:
     first, second = derive_seeds(42)
     assert first != second
     assert derive_seeds(43) != derive_seeds(42)
+
+
+def test_sigma_end_none_and_equal_sigma_are_bit_identical() -> None:
+    ramp = Ramp(0.0, -0.3, 50.0)
+    default = _run(ramp, seed=21)
+    explicit_none = simulate(ramp, 0.05, 10, 0.01, 50, 1.0, 21, sigma_end=None)
+    equal = simulate(ramp, 0.05, 10, 0.01, 50, 1.0, 21, sigma_end=0.05)
+    np.testing.assert_array_equal(default.x, explicit_none.x)
+    np.testing.assert_allclose(default.x, equal.x, rtol=0, atol=1e-12)
+    assert default.sigma_end is None
+    assert equal.sigma_end == 0.05
+
+
+def test_increasing_noise_raises_variance_by_squared_ratio() -> None:
+    sigma, sigma_end = 0.03, 0.06
+    tr = simulate(
+        Ramp.constant(0.0, 1000.0), sigma, 200, 0.01, 50, 1.0, seed=31, sigma_end=sigma_end
+    )
+    fifth = tr.n_samples // 5
+    first = np.var(tr.x[:fifth] - 1.0)
+    last = np.var(tr.x[-fifth:] - 1.0)
+    # Variance tracks sigma(t)^2 (slowly varying); the mean ratio over the two fifths is
+    # (mean sigma^2 in last fifth) / (mean sigma^2 in first fifth) = 3.4 for a 1 -> 2 ramp.
+    t = tr.t
+    amp2 = (sigma + (sigma_end - sigma) * t / t[-1]) ** 2
+    expected = amp2[-fifth:].mean() / amp2[:fifth].mean()
+    assert last > first
+    assert last / first == pytest.approx(expected, rel=0.25)
+
+
+def test_sigma_end_validation() -> None:
+    with pytest.raises(ValueError, match="sigma_end"):
+        simulate(Ramp.constant(0.0, 10.0), 0.1, 2, 0.01, 10, 1.0, 0, sigma_end=-0.1)
