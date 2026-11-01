@@ -20,6 +20,7 @@ import matplotlib as mpl
 import matplotlib.patheffects as pe
 import numpy as np
 import pandas as pd
+from matplotlib.artist import Artist
 from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap, Normalize, to_rgb
 from matplotlib.figure import Figure
@@ -27,6 +28,7 @@ from matplotlib.gridspec import SubplotSpec
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Rectangle
+from matplotlib.ticker import FuncFormatter
 from matplotlib.transforms import ScaledTranslation
 from numpy.typing import NDArray
 
@@ -52,8 +54,15 @@ from tipping.viz.style import PALETTE, Lang, apply_style, style_axes
 
 FloatArray = NDArray[np.float64]
 
-SLIDE_SIZE = (13.33, 5.8)
-"""Canvas of the wide content region of a slide, in inches."""
+SIZE_STD = (11.5, 5.75)
+"""Slide canvas (inches, 2:1): the deck places figures about 11 in wide, so text keeps its size."""
+SIZE_WIDE = (11.5, 5.0)
+"""Slide canvas (inches, 2.3:1) for the three-panel and heatmap figures."""
+FS_TICK = 15
+FS_NOTE = 16
+FS_TITLE = 17
+FS_CAPTION = 20
+FS_BIG = 22
 DPI = 200
 FOLD_JUMP_LOW = -2.0 / math.sqrt(3.0)
 """Equilibrium reached after the upward fold ``r = -r_c`` is crossed (``-2/sqrt(3)``)."""
@@ -65,9 +74,18 @@ SIGNAL_R = (0.0, -0.33)
 SIGNAL_SIGMA = 0.05
 HEATMAP_TIPPED_LIMIT = 0.2
 """Cells whose control group tips more often than this are drawn as unreliable."""
+HEATMAP_EARLY_LIMIT = 0.5
+"""Cells where more ramp runs than this tip before the analysis ends are dotted (survivor bias)."""
 SWEEP_FILE = "sweep_summary.parquet"
 
 _DASH = (0, (5, 3))
+_DOT_STYLE: dict[str, Any] = {
+    "marker": "o",
+    "ms": 8,
+    "mfc": PALETTE.ink,
+    "mec": PALETTE.background,
+    "mew": 1.4,
+}
 _LANDSCAPE_RS = (0.0, -0.2, -FOLD_R)
 _README_LANDSCAPE_RS = (0.0, -0.2, -FOLD_R, -0.5)
 
@@ -80,7 +98,17 @@ _README_LANDSCAPE_RS = (0.0, -0.2, -FOLD_R, -0.5)
 def _setup() -> None:
     """Apply the project style (and regular-font math text) to matplotlib."""
     apply_style()
-    mpl.rcParams["mathtext.default"] = "regular"
+    mpl.rcParams.update(
+        {
+            "mathtext.default": "regular",
+            "font.size": FS_TICK,
+            "xtick.labelsize": FS_TICK,
+            "ytick.labelsize": FS_TICK,
+            "axes.labelsize": FS_NOTE,
+            "axes.titlesize": FS_TITLE,
+            "legend.fontsize": FS_TICK,
+        }
+    )
     mpl.rcParams["hatch.linewidth"] = 1.2
 
 
@@ -94,13 +122,13 @@ def _new_figure(width: float, height: float) -> Figure:
     return fig
 
 
-def _axes(fig: Figure, spec: SubplotSpec, *, grid: bool = False, **kwargs: Any) -> Axes:
-    """Add a styled axes at ``spec`` (a gridspec cell)."""
+def _axes(fig: Figure, lang: Lang, spec: SubplotSpec, *, grid: bool = False, **kwargs: Any) -> Axes:
+    """Add a styled axes at ``spec`` whose numeric ticks use the language's decimal mark."""
     ax: Axes = fig.add_subplot(spec, **kwargs)
-    style_axes(ax)
-    # style_axes(grid=False) would re-enable the grid (matplotlib treats the colour kwargs as
-    # "turn it on"), so the grid is switched off here instead.
-    ax.grid(grid, axis="y")
+    style_axes(ax, grid=grid)
+    formatter = FuncFormatter(lambda value, _: _tick(value, lang))
+    ax.xaxis.set_major_formatter(formatter)
+    ax.yaxis.set_major_formatter(formatter)
     return ax
 
 
@@ -115,14 +143,24 @@ def _default_dir(lang: Lang) -> Path:
     return results_dir() / "figures" / lang
 
 
-def _fixed(value: float, digits: int = 2) -> str:
-    """Format in fixed point with a typographic minus sign."""
-    return f"{value:.{digits}f}".replace("-", "−")
+def _loc(number: str, lang: Lang) -> str:
+    """Localise a formatted number: decimal comma for Spanish, point for English."""
+    return number.replace(".", ",") if lang == "es" else number
 
 
-def _short(value: float) -> str:
-    """Format with three significant figures and a typographic minus sign."""
-    return f"{value:.3g}".replace("-", "−")
+def _fixed(value: float, lang: Lang, digits: int = 2) -> str:
+    """Format in fixed point with a typographic minus sign and the language's decimal mark."""
+    return _loc(f"{value:.{digits}f}".replace("-", "−"), lang)
+
+
+def _short(value: float, lang: Lang) -> str:
+    """Format with three significant figures, a typographic minus and the decimal mark."""
+    return _loc(f"{value:.3g}".replace("-", "−"), lang)
+
+
+def _tick(value: float, lang: Lang) -> str:
+    """Tick label: shortest representation, typographic minus, language's decimal mark."""
+    return _loc(f"{value:g}".replace("-", "−"), lang)
 
 
 def _arrow(
@@ -457,14 +495,21 @@ def _draw_landscape(
     )
     ax.set_xlim(-1.68, 1.68)
     ax.set_ylim(*ylim)
-    ax.set_title(text("r_caption", lang, r=_short(r)), fontsize=18, pad=6)
+    ax.set_title(text("r_caption", lang, r=_short(r, lang)), fontsize=FS_CAPTION, pad=6)
     _no_frame(ax)
     ax.spines["bottom"].set_visible(True)
     ax.spines["bottom"].set_color(PALETTE.grid)
     if labels:
-        ax.text(1.68, ylim[0] + 0.02, text("axis_x", lang), ha="right", va="bottom", fontsize=14)
         ax.text(
-            -1.68, ylim[1] - 0.02, text("axis_potential", lang), ha="left", va="top", fontsize=14
+            1.68, ylim[0] + 0.02, text("axis_x", lang), ha="right", va="bottom", fontsize=FS_NOTE
+        )
+        ax.text(
+            -1.68,
+            ylim[1] - 0.02,
+            text("axis_potential", lang),
+            ha="left",
+            va="top",
+            fontsize=FS_NOTE,
         )
 
 
@@ -480,7 +525,7 @@ def _landscape_panels(
     ylim = _landscape_ylim(rs)
     axes = []
     for i, (spec, r) in enumerate(zip(specs, rs, strict=True)):
-        ax = _axes(fig, spec)
+        ax = _axes(fig, lang, spec)
         _draw_landscape(ax, r, lang, _ball_position(r), ylim, labels=axis_labels and i == 0)
         axes.append(ax)
     return axes
@@ -512,7 +557,7 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
         text("fold_left", lang),
         ha="right",
         va="center",
-        fontsize=14,
+        fontsize=FS_NOTE,
         linespacing=1.15,
     )
     ax.text(
@@ -521,10 +566,10 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
         text("fold_right", lang),
         ha="left",
         va="center",
-        fontsize=14,
+        fontsize=FS_NOTE,
         linespacing=1.15,
     )
-    ax.text(0.0, 1.74, text("bistable", lang), ha="center", va="top", fontsize=14)
+    ax.text(0.0, 1.74, text("bistable", lang), ha="center", va="top", fontsize=FS_NOTE)
     stable_label = text("stable", lang)
     ax.text(
         0.57,
@@ -533,7 +578,7 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
         color=PALETTE.stable,
         ha="center",
         va="bottom",
-        fontsize=14,
+        fontsize=FS_NOTE,
     )
     ax.text(
         -0.57,
@@ -542,7 +587,7 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
         color=PALETTE.stable,
         ha="center",
         va="top",
-        fontsize=14,
+        fontsize=FS_NOTE,
     )
     ax.text(
         0.11,
@@ -551,7 +596,7 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
         color=PALETTE.unstable,
         ha="left",
         va="bottom",
-        fontsize=14,
+        fontsize=FS_NOTE,
     )
 
     row = -1.72
@@ -570,7 +615,7 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
             color=PALETTE.ramp,
             ha="center",
             va="bottom",
-            fontsize=14,
+            fontsize=FS_NOTE,
         )
         _arrow(ax, (-0.3, bottom), (-0.02, bottom), PALETTE.ramp, lw=2.0)
         ax.text(
@@ -580,7 +625,7 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
             color=PALETTE.ramp,
             ha="center",
             va="top",
-            fontsize=14,
+            fontsize=FS_NOTE,
         )
         for r_f, y_from in ((-FOLD_R, down_end), (FOLD_R, -FOLD_X)):
             ax.plot(
@@ -592,14 +637,14 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
                 zorder=1,
             )
         _arrow(ax, (-FOLD_R, row), (FOLD_R, row), PALETTE.ink, lw=1.6, style="<|-|>", scale=16.0)
-        width = _fixed(2.0 * FOLD_R)
+        width = _fixed(2.0 * FOLD_R, lang)
         ax.text(
             0.0,
             row - 0.07,
             text("loop_width", lang, width=width),
             ha="center",
             va="top",
-            fontsize=14,
+            fontsize=FS_NOTE,
         )
         ax.set_ylim(-2.1, 1.8)
     else:
@@ -611,7 +656,7 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
             color=PALETTE.ramp,
             ha="center",
             va="bottom",
-            fontsize=14,
+            fontsize=FS_NOTE,
         )
         ax.set_ylim(-1.95, 1.8)
     ax.set_xlim(-r_lim, r_lim)
@@ -659,7 +704,7 @@ def _draw_band_panel(
         text("ramp", lang),
         color=PALETTE.ramp,
         va="center",
-        fontsize=14,
+        fontsize=FS_NOTE,
     )
     ax.text(
         x_label,
@@ -667,10 +712,10 @@ def _draw_band_panel(
         text("control", lang),
         color=PALETTE.control,
         va="center",
-        fontsize=14,
+        fontsize=FS_NOTE,
     )
     finite = np.nonzero(np.isfinite(ramp[1]))[0]
-    ax.set_xlim(float(t[finite[0]]), float(t[last]) + 190.0)
+    ax.set_xlim(float(t[finite[0]]), float(t[last]) + 240.0)
     ax.set_xlabel(text("time", lang))
     ax.set_ylabel(text(ylabel_key, lang))
     if legend:
@@ -679,7 +724,7 @@ def _draw_band_panel(
             Line2D([], [], color=PALETTE.control, lw=2.4, label=text("control", lang)),
             Patch(facecolor=PALETTE.grid, label=text("band_10_90", lang)),
         ]
-        ax.legend(handles=handles, loc="upper left", fontsize=14)
+        ax.legend(handles=handles, loc="upper left", fontsize=FS_NOTE)
 
 
 def _draw_tau_hist(
@@ -705,7 +750,7 @@ def _draw_tau_hist(
             color=color,
             ha="center",
             va="bottom",
-            fontsize=14,
+            fontsize=FS_NOTE,
         )
     threshold = float(np.quantile(res.tau_null_ar1, 1.0 - cfg_fpr))
     ax.axvline(threshold, color=PALETTE.ink, lw=1.6, ls=_DASH, zorder=3)
@@ -715,18 +760,18 @@ def _draw_tau_hist(
         text("threshold", lang),
         ha="right",
         va="top",
-        fontsize=14,
+        fontsize=FS_NOTE,
         linespacing=1.15,
     )
     if show_auc:
         ax.text(
             0.02,
             0.96,
-            text("auc", lang, auc=_fixed(res.auc_ar1)),
+            text("auc", lang, auc=_fixed(res.auc_ar1, lang)),
             transform=ax.transAxes,
             ha="left",
             va="top",
-            fontsize=20,
+            fontsize=FS_BIG,
         )
     ax.set_ylim(0.0, top * 1.22)
     ax.set_xlim(float(edges[0]), float(edges[-1]))
@@ -757,7 +802,7 @@ def fig_hook(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30) -> Pa
         The written PNG.
     """
     ex = example_runs(n_runs)
-    fig = _new_figure(*SLIDE_SIZE)
+    fig = _new_figure(*SIZE_WIDE)
     ax = fig.add_subplot()
     keep = ex.t <= 1600.0
     ax.plot(ex.t[keep], ex.ramp[keep], color=PALETTE.ramp, lw=1.8)
@@ -785,7 +830,7 @@ def fig_landscapes(
     pathlib.Path
         The written PNG.
     """
-    fig = _new_figure(*SLIDE_SIZE)
+    fig = _new_figure(*SIZE_WIDE)
     grid = fig.add_gridspec(1, len(rs))
     _landscape_panels(fig, [grid[0, i] for i in range(len(rs))], rs, lang, axis_labels=False)
     return _save(fig, out_dir or _default_dir(lang), "s04_landscapes.png")
@@ -806,8 +851,8 @@ def fig_bifurcation(lang: Lang, out_dir: Path | None = None) -> Path:
     pathlib.Path
         The written PNG.
     """
-    fig = _new_figure(*SLIDE_SIZE)
-    ax = _axes(fig, fig.add_gridspec(1, 1)[0, 0])
+    fig = _new_figure(*SIZE_STD)
+    ax = _axes(fig, lang, fig.add_gridspec(1, 1)[0, 0])
     _draw_bifurcation(ax, lang, hysteresis=False)
     return _save(fig, out_dir or _default_dir(lang), "s05_bifurcation.png")
 
@@ -827,8 +872,8 @@ def fig_hysteresis(lang: Lang, out_dir: Path | None = None) -> Path:
     pathlib.Path
         The written PNG.
     """
-    fig = _new_figure(*SLIDE_SIZE)
-    ax = _axes(fig, fig.add_gridspec(1, 1)[0, 0])
+    fig = _new_figure(*SIZE_STD)
+    ax = _axes(fig, lang, fig.add_gridspec(1, 1)[0, 0])
     _draw_bifurcation(ax, lang, hysteresis=True)
     return _save(fig, out_dir or _default_dir(lang), "s07_hysteresis.png")
 
@@ -852,10 +897,10 @@ def fig_noise(lang: Lang, out_dir: Path | None = None) -> Path:
     schedule = Ramp.constant(0.0, 12.0)
     clean = simulate(schedule, 0.0, 1, 0.01, 5, 1.3, NOISE_SEED)
     noisy = simulate(schedule, sigma, 1, 0.01, 5, 1.3, NOISE_SEED)
-    fig = _new_figure(*SLIDE_SIZE)
+    fig = _new_figure(*SIZE_STD)
     grid = fig.add_gridspec(1, 2)
-    axes = [_axes(fig, grid[0, 0]), _axes(fig, grid[0, 1])]
-    captions = (text("no_noise", lang), text("with_noise", lang, sigma=f"{sigma:g}"))
+    axes = [_axes(fig, lang, grid[0, 0]), _axes(fig, lang, grid[0, 1])]
+    captions = (text("no_noise", lang), text("with_noise", lang, sigma=_loc(f"{sigma:g}", lang)))
     for ax, traj, caption in zip(axes, (clean, noisy), captions, strict=True):
         ax.plot([0.0, float(traj.t[-1])], [1.0, 1.0], color=PALETTE.stable, lw=1.6, zorder=1)
         ax.plot(traj.t, traj.x[:, 0], color=PALETTE.ink, lw=1.8, zorder=2)
@@ -866,9 +911,9 @@ def fig_noise(lang: Lang, out_dir: Path | None = None) -> Path:
             color=PALETTE.stable,
             ha="left",
             va="center",
-            fontsize=14,
+            fontsize=FS_NOTE,
         )
-        ax.set_title(caption, fontsize=16, loc="left")
+        ax.set_title(caption, fontsize=FS_TITLE, loc="left")
         ax.set_ylim(0.88, 1.35)
         ax.set_xlim(0.0, float(traj.t[-1]) + 3.2)
         ax.set_xticks([0, 4, 8, 12])
@@ -895,7 +940,7 @@ def _signal_figure(
 
     fig = _new_figure(*size)
     grid = fig.add_gridspec(1, 3, width_ratios=[1.35, 1.0, 1.0])
-    ax_t, ax_h, ax_c = (_axes(fig, grid[0, i]) for i in range(3))
+    ax_t, ax_h, ax_c = (_axes(fig, lang, grid[0, i]) for i in range(3))
 
     # (a) the same noise realisation in the two valleys
     n_show = round(120.0 / steep.dt)
@@ -905,7 +950,7 @@ def _signal_figure(
     ax_t.set_ylim(-0.16, 0.16)
     ax_t.set_xlim(0.0, 120.0)
     ax_t.set_xlabel(text("time", lang))
-    ax_t.set_title(text("deviation_title", lang), fontsize=16, loc="left")
+    ax_t.set_title(text("deviation_title", lang), fontsize=FS_TITLE, loc="left")
     ax_t.set_yticks([-0.1, 0.0, 0.1])
     ax_t.set_xticks([0, 40, 80, 120])
 
@@ -925,7 +970,7 @@ def _signal_figure(
     ax_h.set_yticks([])
     ax_h.set_xticks([-0.1, 0.0, 0.1])
     ax_h.set_xlabel(text("deviation", lang))
-    ax_h.set_title(text("distribution_title", lang), fontsize=16, loc="left")
+    ax_h.set_title(text("distribution_title", lang), fontsize=FS_TITLE, loc="left")
 
     # (c) autocorrelation against exp(lambda * tau)
     n_lags = 12
@@ -935,15 +980,15 @@ def _signal_figure(
         pooled = data.deviation[:, data.kept if data.kept.any() else slice(None)]
         ax_c.plot(lags, _pooled_acf(pooled, n_lags), "o", ms=6, color=color, zorder=2)
         ax_c.plot(fine, ou_acf(data.rate, fine), color=PALETTE.ink, lw=1.6, ls=_DASH, zorder=3)
-    lam_steep = _fixed(steep.rate)
-    lam_flat = _fixed(flat.rate)
+    lam_steep = _fixed(steep.rate, lang)
+    lam_flat = _fixed(flat.rate, lang)
     # Colour-coded labels in the free upper-right area, in the same vertical order as the curves.
     ax_c.text(
         2.3,
         0.52,
         text("lam_flat", lang, lam=lam_flat),
         color=PALETTE.ramp,
-        fontsize=14,
+        fontsize=FS_NOTE,
         va="center",
     )
     ax_c.text(
@@ -951,13 +996,13 @@ def _signal_figure(
         0.38,
         text("lam_steep", lang, lam=lam_steep),
         color=PALETTE.control,
-        fontsize=14,
+        fontsize=FS_NOTE,
         va="center",
     )
     ax_c.set_xlim(0.0, float(lags[-1]))
     ax_c.set_ylim(-0.08, 1.05)
     ax_c.set_xlabel(text("lag", lang))
-    ax_c.set_title(text("autocorr_title", lang), fontsize=16, loc="left")
+    ax_c.set_title(text("autocorr_title", lang), fontsize=FS_TITLE, loc="left")
 
     handles = [
         Line2D(
@@ -965,7 +1010,7 @@ def _signal_figure(
             [],
             color=color,
             lw=2.4,
-            label=text(key, lang, r=_short(data.r), lam=_fixed(data.rate)),
+            label=text(key, lang, r=_short(data.r, lang), lam=_fixed(data.rate, lang)),
         )
         for data, color, _, key, _ in valleys
     ]
@@ -976,9 +1021,9 @@ def _signal_figure(
     legend_loc: Literal["outside lower center", "outside upper center"] = (
         "outside lower center" if title else "outside upper center"
     )
-    fig.legend(handles=handles, loc=legend_loc, ncol=3, fontsize=14, frameon=False)
+    fig.legend(handles=handles, loc=legend_loc, ncol=3, fontsize=FS_NOTE, frameon=False)
     if title:
-        fig.suptitle(text("title_signal", lang), fontsize=16)
+        fig.suptitle(text("title_signal", lang), fontsize=FS_TITLE)
     return fig
 
 
@@ -1016,7 +1061,7 @@ def fig_signal(
     pathlib.Path
         The written PNG.
     """
-    size = (12.0, 5.2) if title else SLIDE_SIZE
+    size = (12.0, 5.4) if title else SIZE_WIDE
     fig = _signal_figure(lang, n_runs=n_runs, duration=duration, title=title, size=size)
     return _save(fig, out_dir or _default_dir(lang), filename)
 
@@ -1040,10 +1085,10 @@ def fig_experiment(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30)
     """
     ex = example_runs(n_runs)
     t_max = 1600.0
-    fig = _new_figure(*SLIDE_SIZE)
+    fig = _new_figure(*SIZE_STD)
     grid = fig.add_gridspec(2, 1, hspace=0.08)
-    top = _axes(fig, grid[0, 0])
-    bottom = _axes(fig, grid[1, 0], sharex=top, sharey=top)
+    top = _axes(fig, lang, grid[0, 0])
+    bottom = _axes(fig, lang, grid[1, 0], sharex=top, sharey=top)
     _draw_series(top, ex, lang, which="ramp", t_max=t_max)
     _draw_series(bottom, ex, lang, which="control", t_max=t_max)
     for ax in (top, bottom):
@@ -1059,7 +1104,7 @@ def fig_experiment(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30)
         transform=top.transAxes,
         color=PALETTE.ramp,
         va="top",
-        fontsize=16,
+        fontsize=FS_TITLE,
     )
     bottom.text(
         0.008,
@@ -1068,7 +1113,7 @@ def fig_experiment(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30)
         transform=bottom.transAxes,
         color=PALETTE.control,
         va="top",
-        fontsize=16,
+        fontsize=FS_TITLE,
     )
     top.text(
         ex.fold_time + 25.0,
@@ -1076,7 +1121,7 @@ def fig_experiment(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30)
         text("fold_time", lang, t=f"{ex.fold_time:.0f}"),
         va="top",
         ha="left",
-        fontsize=14,
+        fontsize=FS_NOTE,
         linespacing=1.15,
     )
     bottom.set_xlabel(text("time", lang))
@@ -1105,9 +1150,9 @@ def fig_results(lang: Lang, base: Baseline, out_dir: Path | None = None) -> Path
     exp, cfg = base.experiment, base.cfg.indicators
     ramp = indicator_bands(exp.ramp.x, exp.ramp.t, cfg)
     null = indicator_bands(exp.null.x, exp.null.t, cfg)
-    fig = _new_figure(*SLIDE_SIZE)
+    fig = _new_figure(*SIZE_STD)
     grid = fig.add_gridspec(1, 2)
-    left, right = _axes(fig, grid[0, 0]), _axes(fig, grid[0, 1])
+    left, right = _axes(fig, lang, grid[0, 0]), _axes(fig, lang, grid[0, 1])
     _draw_band_panel(
         left,
         ramp.variance,
@@ -1142,8 +1187,8 @@ def fig_control(lang: Lang, base: Baseline, out_dir: Path | None = None) -> Path
     pathlib.Path
         The written PNG.
     """
-    fig = _new_figure(*SLIDE_SIZE)
-    ax = _axes(fig, fig.add_gridspec(1, 1)[0, 0])
+    fig = _new_figure(*SIZE_STD)
+    ax = _axes(fig, lang, fig.add_gridspec(1, 1)[0, 0])
     _draw_tau_hist(ax, base.experiment.result, lang, show_auc=True, cfg_fpr=base.cfg.indicators.fpr)
     return _save(fig, out_dir or _default_dir(lang), "s13_control.png")
 
@@ -1215,6 +1260,7 @@ def _draw_heat(
     *,
     fmt: str,
     hatched: pd.DataFrame | None,
+    dotted: pd.DataFrame | None,
     ylabel: bool,
 ) -> None:
     """One annotated heatmap: sigma on y (low at the bottom), duration on x (short to long)."""
@@ -1230,6 +1276,7 @@ def _draw_heat(
         linewidth=3.0,
     )
     flags = None if hatched is None else hatched.to_numpy(dtype=bool)
+    dots = None if dotted is None else dotted.to_numpy(dtype=bool)
     for i in range(n_rows):
         for j in range(n_cols):
             value = values[i, j]
@@ -1253,13 +1300,21 @@ def _draw_heat(
                         zorder=2,
                     )
                 )
+            if dots is not None and bool(dots[i, j]):
+                ax.plot(
+                    [j + 0.13],
+                    [i + 0.86],
+                    ls="none",
+                    **_DOT_STYLE,
+                    zorder=4,
+                )
             ax.text(
                 j + 0.5,
                 i + 0.5,
-                fmt.format(value),
+                _loc(fmt.format(value), lang),
                 ha="center",
                 va="center",
-                fontsize=14,
+                fontsize=FS_NOTE,
                 color=ink,
                 zorder=3,
                 path_effects=effects,
@@ -1267,7 +1322,7 @@ def _draw_heat(
     ax.set_xlim(0, n_cols)
     ax.set_ylim(0, n_rows)
     ax.set_xticks(np.arange(n_cols) + 0.5, [f"{int(d)}" for d in table.columns])
-    ax.set_yticks(np.arange(n_rows) + 0.5, [f"{s:.2f}" for s in table.index])
+    ax.set_yticks(np.arange(n_rows) + 0.5, [_fixed(float(s), lang) for s in table.index])
     ax.tick_params(length=0)
     ax.grid(False)
     for spine in ax.spines.values():
@@ -1286,7 +1341,9 @@ def _heat_figure(
     fmt: str,
     colorbar_key: str,
     colorbar_ticks: list[float],
+    colorbar_labels: list[str],
     hatched: pd.DataFrame | None,
+    dotted: pd.DataFrame | None,
     title: str | None,
     size: tuple[float, float],
 ) -> Figure:
@@ -1294,27 +1351,41 @@ def _heat_figure(
     grid = fig.add_gridspec(1, len(panels))
     axes = []
     for i, (table, caption_key, _) in enumerate(panels):
-        ax = _axes(fig, grid[0, i])
-        _draw_heat(ax, table, cmap, norm, lang, fmt=fmt, hatched=hatched, ylabel=i == 0)
-        ax.set_title(text(caption_key, lang), fontsize=16, loc="left")
+        ax = _axes(fig, lang, grid[0, i])
+        _draw_heat(
+            ax, table, cmap, norm, lang, fmt=fmt, hatched=hatched, dotted=dotted, ylabel=i == 0
+        )
+        ax.set_title(text(caption_key, lang), fontsize=FS_TITLE, loc="left")
         axes.append(ax)
     bar = fig.colorbar(
         mpl.cm.ScalarMappable(norm=norm, cmap=cmap), ax=axes, shrink=0.8, pad=0.02, aspect=22
     )
-    bar.set_ticks(colorbar_ticks)
+    bar.set_ticks(colorbar_ticks, labels=colorbar_labels)
     bar.outline.set_visible(False)
     bar.ax.tick_params(length=0, labelsize=14)
-    bar.set_label(text(colorbar_key, lang), fontsize=14)
+    bar.set_label(text(colorbar_key, lang), fontsize=FS_NOTE)
+    handles: list[Artist] = []
     if hatched is not None and bool(hatched.to_numpy(dtype=bool).any()):
-        swatch = Patch(
-            facecolor=PALETTE.background,
-            edgecolor=(*to_rgb(PALETTE.ink), 0.45),
-            hatch="///",
-            label=text("unreliable", lang),
+        handles.append(
+            Patch(
+                facecolor=PALETTE.background,
+                edgecolor=(*to_rgb(PALETTE.ink), 0.45),
+                hatch="///",
+                label=text("unreliable", lang),
+            )
         )
-        fig.legend(handles=[swatch], loc="outside lower center", fontsize=14, frameon=False)
+    if dotted is not None and bool(dotted.to_numpy(dtype=bool).any()):
+        handles.append(Line2D([], [], ls="none", **_DOT_STYLE, label=text("ramp_early", lang)))
+    if handles:
+        fig.legend(
+            handles=handles,
+            loc="outside lower center",
+            ncol=len(handles),
+            fontsize=FS_TICK,
+            frameon=False,
+        )
     if title:
-        fig.suptitle(title, fontsize=16)
+        fig.suptitle(title, fontsize=FS_TITLE)
     return fig
 
 
@@ -1374,9 +1445,11 @@ def fig_heatmap(
         fmt="{:.2f}",
         colorbar_key="heat_colorbar",
         colorbar_ticks=[0.5, 0.75, 1.0],
+        colorbar_labels=[_fixed(t, lang) for t in (0.5, 0.75, 1.0)],
         hatched=unreliable,
+        dotted=_pivot(table, "frac_ramp_tipped_early") > HEATMAP_EARLY_LIMIT,
         title=text("title_heatmap", lang) if title else None,
-        size=(12.0, 5.6) if title else SLIDE_SIZE,
+        size=(12.0, 5.6) if title else SIZE_WIDE,
     )
     return _save(fig, out_dir or _default_dir(lang), filename)
 
@@ -1425,9 +1498,11 @@ def fig_tipped(
         fmt="{:.0%}",
         colorbar_key="tipped_colorbar",
         colorbar_ticks=[0.0, 0.5, 1.0],
+        colorbar_labels=[_tick(t, lang) for t in (0.0, 0.5, 1.0)],
         hatched=None,
+        dotted=None,
         title=None,
-        size=SLIDE_SIZE,
+        size=SIZE_WIDE,
     )
     return _save(fig, out_dir or _default_dir(lang), "b04_tipped.png")
 
@@ -1457,9 +1532,9 @@ def readme_bifurcation(lang: Lang, out_dir: Path) -> Path:
     _landscape_panels(
         fig, [grid[0, i] for i in range(4)], _README_LANDSCAPE_RS, lang, axis_labels=True
     )
-    ax = _axes(fig, grid[1, :])
+    ax = _axes(fig, lang, grid[1, :])
     _draw_bifurcation(ax, lang, hysteresis=False)
-    fig.suptitle(text("title_bifurcation", lang), fontsize=16)
+    fig.suptitle(text("title_bifurcation", lang), fontsize=FS_TITLE)
     return _save(fig, out_dir, "fig_bifurcation.png")
 
 
@@ -1488,7 +1563,7 @@ def readme_results(lang: Lang, base: Baseline, out_dir: Path, *, n_runs: int = 3
     null = indicator_bands(exp.null.x, exp.null.t, cfg)
     fig = _new_figure(12.0, 8.0)
     grid = fig.add_gridspec(2, 2)
-    series, var_ax, ar1_ax, tau_ax = (_axes(fig, grid[i // 2, i % 2]) for i in range(4))
+    series, var_ax, ar1_ax, tau_ax = (_axes(fig, lang, grid[i // 2, i % 2]) for i in range(4))
 
     _draw_series(series, ex, lang, which="control", t_max=1600.0)
     _draw_series(series, ex, lang, which="ramp", t_max=1600.0)
@@ -1504,18 +1579,18 @@ def readme_results(lang: Lang, base: Baseline, out_dir: Path, *, n_runs: int = 3
         text("fold_time", lang, t=f"{ex.fold_time:.0f}"),
         va="center",
         ha="right",
-        fontsize=14,
+        fontsize=FS_NOTE,
         linespacing=1.15,
     )
     series.text(
-        30.0, -1.0, text("ramp", lang), color=PALETTE.ramp, fontsize=14, va="center", ha="left"
+        30.0, -1.0, text("ramp", lang), color=PALETTE.ramp, fontsize=FS_NOTE, va="center", ha="left"
     )
     series.text(
         30.0,
         1.22,
         text("control", lang),
         color=PALETTE.control,
-        fontsize=14,
+        fontsize=FS_NOTE,
         va="center",
         ha="left",
     )
@@ -1535,7 +1610,7 @@ def readme_results(lang: Lang, base: Baseline, out_dir: Path, *, n_runs: int = 3
         ar1_ax, ramp.ar1, null.ar1, ramp.t, lang, scale=1.0, ylabel_key="rolling_ar1", legend=False
     )
     _draw_tau_hist(tau_ax, exp.result, lang, show_auc=True, cfg_fpr=cfg.fpr)
-    fig.suptitle(text("title_results", lang), fontsize=16)
+    fig.suptitle(text("title_results", lang), fontsize=FS_TITLE)
     return _save(fig, out_dir, "fig_results.png")
 
 

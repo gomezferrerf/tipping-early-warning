@@ -1,7 +1,9 @@
+# ruff: noqa: RUF001
 """Tests for the static figures: label completeness, PNG output, heatmap on synthetic data."""
 
 from __future__ import annotations
 
+import re
 from functools import partial
 from pathlib import Path
 
@@ -54,6 +56,15 @@ def test_every_label_has_both_languages(lang: Lang) -> None:
     for key, translations in LABELS.items():
         assert set(translations) == set(LANGS), key
         assert translations[lang].strip(), f"{key} is empty in {lang}"
+
+
+def test_spanish_labels_use_decimal_commas() -> None:
+    assert not [k for k, t in LABELS.items() if re.search(r"\d\.\d", t["es"])], "es uses ','"
+    assert fig._fixed(-2.0, "es") == "−2,00"
+    assert fig._fixed(-2.0, "en") == "−2.00"
+    assert fig._short(-0.385, "es") == "−0,385"
+    assert fig._tick(0.25, "es") == "0,25"
+    assert fig._tick(-1.0, "en") == "−1"
 
 
 def test_spanish_never_says_colapso() -> None:
@@ -116,6 +127,13 @@ def test_unreliable_cells_follow_the_control_tip_rule() -> None:
     assert flags.at[0.30, 400.0]
     assert flags.at[0.30, 2000.0]
     assert not flags.at[0.30, 100.0]  # 0.1 is below the 0.2 limit
+
+
+def test_early_tip_cells_follow_the_survivor_bias_rule() -> None:
+    flags = fig._pivot(_synthetic_summary(), "frac_ramp_tipped_early") > fig.HEATMAP_EARLY_LIMIT
+    assert not flags.at[0.05, 2000.0]  # 0.0
+    assert flags.at[0.30, 2000.0]  # 0.2 * 3 = 0.6
+    assert not flags.at[0.15, 100.0]  # 0.1
 
 
 def test_summary_columns_accept_plain_or_mean_names() -> None:
