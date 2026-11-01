@@ -84,7 +84,12 @@ def style_axes(ax: Axes, *, grid: bool = True) -> Axes:
         ax.spines[side].set_visible(False)
     for side in ("left", "bottom"):
         ax.spines[side].set_color(PALETTE.muted)
-    ax.grid(grid, axis="y", color=PALETTE.grid, linewidth=0.8)
+    # Passing color/linewidth to ``grid(False, ...)`` re-enables the grid in matplotlib,
+    # so the style kwargs are only given when the grid is wanted.
+    if grid:
+        ax.grid(True, axis="y", color=PALETTE.grid, linewidth=0.8)
+    else:
+        ax.grid(False)
     ax.set_axisbelow(True)
     return ax
 
