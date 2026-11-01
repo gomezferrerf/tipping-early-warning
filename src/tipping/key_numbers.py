@@ -25,6 +25,10 @@ Top-level keys of the JSON file:
     How many runs remain valid at high noise.
 ``detrend_control``
     A process whose mean moves but whose dynamics do not change, run through the same pipeline.
+``ou_check``
+    Simulated variance and AR(1) against the linear Ornstein-Uhlenbeck theory.
+``matched_truncation``
+    AUC when each control run is truncated at the same times as the ramp runs.
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ from tipping.evaluate import (
     run_taus,
     tpr_at_fpr,
 )
+from tipping.indicators import compute_indicators, kendall_tau_per_run
 from tipping.model import (
     FOLD_R,
     FOLD_X,
@@ -58,7 +63,8 @@ from tipping.model import (
     upper_branch,
 )
 from tipping.paths import default_config_path, results_dir
-from tipping.simulate import Trajectories, derive_seeds, first_crossing, simulate
+from tipping.simulate import Ramp, Trajectories, derive_seeds, first_crossing, simulate
+from tipping.theory import predicted_indicators
 
 FloatArray = NDArray[np.float64]
 
@@ -94,6 +100,14 @@ A2_BASELINE_DIP_LEVEL = 0.2
 
 OU_RATE = -2.0
 """Growth rate of the process used in :func:`detrend_control` (the rate at ``r = 0``)."""
+
+OU_CHECK_CASES: tuple[tuple[float, float], ...] = (
+    (0.0, 0.05),
+    (-0.33, 0.015),
+    (-0.33, 0.03),
+    (-0.33, 0.05),
+)
+"""``(r, sigma)`` pairs compared with the linear theory in :func:`ou_check`."""
 
 
 def _jsonable(value: Any) -> Any:
@@ -719,6 +733,130 @@ def detrend_control(
     return out
 
 
+def ou_check(
+    cfg: ExperimentConfig,
+    n_runs: int = 300,
+    duration: float = 1000.0,
+    seed: int = 21,
+    cases: Sequence[tuple[float, float]] = OU_CHECK_CASES,
+) -> dict[str, Any]:
+    """Compare simulated variance and AR(1) with the linear Ornstein-Uhlenbeck theory.
+
+    Runs at constant ``r`` start on the upper branch; the first 100 samples are discarded and
+    only the runs that never tip are used.
+
+    Parameters
+    ----------
+    cfg : ExperimentConfig
+        Baseline configuration (step and sampling interval).
+    n_runs : int, optional
+        Runs per case.
+    duration : float, optional
+        Simulated time per run.
+    seed : int, optional
+        Seed shared by all cases.
+    cases : sequence of tuple, optional
+        ``(r, sigma)`` pairs.
+
+    Returns
+    -------
+    dict
+        One row per case with the fraction of runs kept, the simulated and theoretical variance
+        and AR(1), and the variance ratio.
+    """
+    sim = cfg.sim
+    interval = sim.dt * sim.sample_every
+    rows: list[dict[str, Any]] = []
+    for r, sigma in cases:
+        traj = simulate(
+            Ramp.constant(r, duration), sigma, n_runs, sim.dt, sim.sample_every,
+            float(upper_branch(r)), seed,
+        )  # fmt: skip
+        kept = first_crossing(traj.x) >= traj.n_samples
+        x = traj.x[100:, kept]
+        centred = x - x.mean(axis=0)
+        variance = float(centred.var(axis=0).mean())
+        head, tail = centred[:-1], centred[1:]
+        corr = (head * tail).sum(axis=0) / np.sqrt((head**2).sum(axis=0) * (tail**2).sum(axis=0))
+        var_theory, ar1_theory = predicted_indicators(r, sigma, interval)
+        rows.append(
+            {
+                "r": r,
+                "sigma": sigma,
+                "frac_runs_kept": float(kept.mean()),
+                "variance_sim": variance,
+                "variance_theory": var_theory,
+                "variance_ratio": variance / var_theory,
+                "ar1_sim": float(corr.mean()),
+                "ar1_theory": ar1_theory,
+            }
+        )
+    return {"seed": seed, "n_runs": n_runs, "duration": duration, "rows": rows}
+
+
+def matched_truncation(
+    cfg: ExperimentConfig, sigmas: Sequence[float] = TIPPING_SIGMAS, seed: int = 9
+) -> dict[str, Any]:
+    """Check that truncating ramp runs at their tip does not bias the AUC.
+
+    The control runs are truncated at stop indices drawn from those of the valid ramp runs (and
+    never beyond their own tip), instead of at the common analysis horizon.
+
+    Parameters
+    ----------
+    cfg : ExperimentConfig
+        Baseline configuration.
+    sigmas : sequence of float, optional
+        Noise levels compared.
+    seed : int, optional
+        Master seed of the ramp and control groups.
+
+    Returns
+    -------
+    dict
+        Per noise level, the AUC of both indicators with the standard control and with the
+        matched-truncation control, and the largest absolute difference over all levels.
+    """
+    sim_cfg, ind = cfg.sim, cfg.indicators
+    ramp_seed, null_seed = derive_seeds(seed)
+    rows: list[dict[str, Any]] = []
+    for sigma in sigmas:
+        args = (sigma, sim_cfg.n_runs, sim_cfg.dt, sim_cfg.sample_every, sim_cfg.x0)
+        ramp = simulate(sim_cfg.ramp(), *args, ramp_seed)
+        null = simulate(sim_cfg.control(), *args, null_seed)
+        ramp_taus, null_taus = run_taus(ramp.x, ind), run_taus(null.x, ind)
+        valid = np.isfinite(ramp_taus.tau_var) & np.isfinite(ramp_taus.tau_ar1)
+        row: dict[str, Any] = {"sigma": sigma}
+        if valid.any():
+            horizon = round(ind.analysis_fraction * ramp.n_samples)
+            stop_ramp = np.minimum(ramp_taus.tip_index - ind.detrend_window, horizon)
+            stops = np.random.default_rng(0).choice(stop_ramp[valid], size=null.n_runs)
+            stops = np.minimum(stops, null_taus.tip_index - ind.detrend_window)
+            null_ind = compute_indicators(null.x, ind.window, ind.detrend_window)
+            step = ind.resolved_step()
+            matched = {
+                "variance": kendall_tau_per_run(
+                    null_ind.variance, ind.window, stops, step, ind.min_points
+                ),
+                "ar1": kendall_tau_per_run(null_ind.ar1, ind.window, stops, step, ind.min_points),
+            }
+            standard = {"variance": null_taus.tau_var, "ar1": null_taus.tau_ar1}
+            pos = {"variance": ramp_taus.tau_var[valid], "ar1": ramp_taus.tau_ar1[valid]}
+            for name in ("variance", "ar1"):
+                for label, neg in (("standard", standard[name]), ("matched", matched[name])):
+                    finite = neg[np.isfinite(neg)]
+                    row[f"auc_{name}_{label}"] = auc(pos[name], finite) if finite.size else None
+        rows.append(row)
+    diffs = [
+        abs(row[f"auc_{name}_standard"] - row[f"auc_{name}_matched"])
+        for row in rows
+        for name in ("variance", "ar1")
+        if row.get(f"auc_{name}_standard") is not None
+        and row.get(f"auc_{name}_matched") is not None
+    ]
+    return {"seed": seed, "rows": rows, "max_abs_auc_difference": max(diffs) if diffs else None}
+
+
 def compute_key_numbers(
     cfg: ExperimentConfig,
     sweep: pd.DataFrame,
@@ -728,6 +866,7 @@ def compute_key_numbers(
     window_runs: int | None = None,
     window_settings: Sequence[WindowSetting] = WINDOW_SETTINGS,
     adiabaticity_durations: Sequence[float] = ADIABATICITY_DURATIONS,
+    ou_runs: int = 300,
 ) -> dict[str, Any]:
     """Compute every key number from the configuration and the sweep tables.
 
@@ -747,6 +886,8 @@ def compute_key_numbers(
         Settings of :func:`window_vs_duration`.
     adiabaticity_durations : sequence of float, optional
         Durations of :func:`adiabaticity`.
+    ou_runs : int, optional
+        Runs per case in :func:`ou_check`.
 
     Returns
     -------
@@ -767,6 +908,8 @@ def compute_key_numbers(
         "sweep_paired": sweep_paired(sweep),
         "survivors": survivors(summary),
         "detrend_control": detrend_control(cfg, window_runs),
+        "ou_check": ou_check(cfg, n_runs=ou_runs),
+        "matched_truncation": matched_truncation(cfg),
     }
     return _jsonable(data)  # type: ignore[no-any-return]
 

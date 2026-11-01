@@ -28,6 +28,8 @@ TOP_LEVEL_KEYS = {
     "sweep_paired",
     "survivors",
     "detrend_control",
+    "ou_check",
+    "matched_truncation",
 }
 
 
@@ -186,6 +188,24 @@ def test_detrend_control_smoke(tiny: ExperimentConfig) -> None:
         assert out[key]["auc"] is None or 0.0 <= out[key]["auc"] <= 1.0
 
 
+def test_ou_check_matches_linear_theory_at_r0(tiny: ExperimentConfig) -> None:
+    out = kn.ou_check(tiny, n_runs=40, duration=600.0, cases=((0.0, 0.05),))
+    (row,) = out["rows"]
+    assert row["frac_runs_kept"] == pytest.approx(1.0)
+    assert row["variance_theory"] == pytest.approx(0.05**2 / 4.0)
+    assert row["variance_ratio"] == pytest.approx(1.0, abs=0.15)
+    assert row["ar1_sim"] == pytest.approx(row["ar1_theory"], abs=0.1)
+
+
+def test_matched_truncation_smoke(tiny: ExperimentConfig) -> None:
+    out = kn.matched_truncation(tiny, sigmas=(0.05,), seed=3)
+    (row,) = out["rows"]
+    assert row["sigma"] == 0.05
+    assert out["max_abs_auc_difference"] is None or 0.0 <= out["max_abs_auc_difference"] <= 1.0
+    for name in ("variance", "ar1"):
+        assert row.get(f"auc_{name}_standard") is None or 0.0 <= row[f"auc_{name}_standard"] <= 1.0
+
+
 def test_jsonable_maps_nan_and_numpy() -> None:
     cleaned = kn._jsonable(
         {"a": np.float64(1.5), "b": [float("nan"), np.int64(2)], "c": np.arange(2)}
@@ -203,6 +223,7 @@ def test_compute_key_numbers_schema_and_json(tiny: ExperimentConfig) -> None:
         window_runs=12,
         window_settings=((200.0, 40, 10),),
         adiabaticity_durations=(100.0,),
+        ou_runs=10,
     )
     assert set(data) == TOP_LEVEL_KEYS
     assert set(data["horizon"]["rows"][0]) >= {"auc_var", "auc_ar1", "tpr_var", "tpr_ar1"}
