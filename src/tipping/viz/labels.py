@@ -58,7 +58,10 @@ LABELS: dict[str, dict[str, str]] = {
     "control": {"es": "control", "en": "control"},
     "ramp_series": {"es": "rampa: r de 0 a −0,6", "en": "ramp: r from 0 to −0.6"},
     "control_series": {"es": "control: r = 0", "en": "control: r = 0"},
-    "fold_time": {"es": "punto de quiebre\nt ≈ {t}", "en": "tipping point\nt ≈ {t}"},
+    "fold_time": {
+        "es": "pliegue (r = −$r_c$) · t ≈ {t}",
+        "en": "fold (r = −$r_c$) · t ≈ {t}",
+    },
     "rolling_variance": {
         "es": "varianza móvil ($\\times 10^{-3}$)",
         "en": "rolling variance ($\\times 10^{-3}$)",
@@ -75,7 +78,10 @@ LABELS: dict[str, dict[str, str]] = {
     "heat_y": {"es": "ruido σ", "en": "noise σ"},
     "heat_colorbar": {"es": "AUC medio", "en": "mean AUC"},
     "unreliable": {"es": "el control cae solo", "en": "the control tips on its own"},
-    "ramp_early": {"es": "la mayoría de rampas cae antes", "en": "most ramps tip early"},
+    "ramp_early": {
+        "es": "la mayoría de las rampas cae antes del 60 % del recorrido",
+        "en": "most ramps tip before 60 % of the ramp",
+    },
     "tipped_null": {"es": "control que cae solo", "en": "control runs that tip"},
     "tipped_ramp": {"es": "rampa que cae antes de tiempo", "en": "ramp runs that tip too early"},
     "tipped_colorbar": {"es": "fracción de corridas", "en": "fraction of runs"},
@@ -85,7 +91,7 @@ LABELS: dict[str, dict[str, str]] = {
         "en": "Route to the saddle-node bifurcation: the valley flattens and vanishes",
     },
     "title_signal": {
-        "es": "Ralentización crítica: valle plano, fluctuaciones más grandes y lentas",
+        "es": "Desaceleración crítica: valle plano, fluctuaciones más grandes y lentas",
         "en": "Critical slowing down: a flatter valley gives larger, slower fluctuations",
     },
     "title_results": {

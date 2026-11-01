@@ -11,6 +11,7 @@ physics from the core modules (nothing is re-derived here).
 from __future__ import annotations
 
 import functools
+import logging
 import math
 import warnings
 from collections.abc import Callable
@@ -79,8 +80,10 @@ SIGNAL_SIGMA = 0.05
 HEATMAP_TIPPED_LIMIT = 0.2
 """Cells whose control group tips more often than this are drawn as unreliable."""
 HEATMAP_EARLY_LIMIT = 0.5
-"""Cells where more ramp runs than this tip before the analysis ends are dotted (survivor bias)."""
+"""Cells where more ramp runs than this tip before 60% of the ramp are dotted."""
 SWEEP_FILE = "sweep_summary.parquet"
+
+_LOG = logging.getLogger(__name__)
 
 _DASH = (0, (5, 3))
 _DOT_STYLE: dict[str, Any] = {
@@ -179,6 +182,32 @@ def _fixed(value: float, lang: Lang, digits: int = 2) -> str:
 def _short(value: float, lang: Lang) -> str:
     """Format with three significant figures, a typographic minus and the decimal mark."""
     return _loc(f"{value:.3g}".replace("-", "−"), lang)
+
+
+def auc_text(value: float, lang: Lang) -> str:
+    """Format an AUC with two decimals, never rounding a value below 1 up to ``1,00``.
+
+    A value such as 0.9996 would print as 1.00 and read as perfect separation, so the number of
+    decimals grows (up to 6) until the text is no longer a rounded 1. The same rule as the deck's
+    number formatter.
+
+    Parameters
+    ----------
+    value : float
+        AUC in [0, 1].
+    lang : {"es", "en"}
+        Language of the decimal mark.
+
+    Returns
+    -------
+    str
+        For example ``"0,87"``, ``"0,998"``, ``"0,9996"`` or ``"1,00"`` (only for exactly 1).
+    """
+    for digits in range(2, 7):
+        out = f"{value:.{digits}f}"
+        if value >= 1.0 or float(out) < 1.0:
+            return _loc(out, lang)
+    return _loc(f"{value:.6f}", lang)
 
 
 def _tick(value: float, lang: Lang) -> str:
@@ -790,7 +819,7 @@ def _draw_tau_hist(
         ax.text(
             0.02,
             0.96,
-            text("auc", lang, auc=_fixed(res.auc_ar1, lang)),
+            text("auc", lang, auc=auc_text(res.auc_ar1, lang)),
             transform=ax.transAxes,
             ha="left",
             va="top",
@@ -1146,13 +1175,12 @@ def fig_experiment(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30)
         fontsize=FS_TITLE,
     )
     top.text(
-        ex.fold_time + 25.0,
+        ex.fold_time - 25.0,
         1.5,
         text("fold_time", lang, t=f"{ex.fold_time:.0f}"),
         va="top",
-        ha="left",
+        ha="right",
         fontsize=FS_NOTE,
-        linespacing=1.15,
     )
     bottom.set_xlabel(text("time", lang))
     for ax in (top, bottom):
@@ -1290,7 +1318,7 @@ def _draw_heat(
     norm: Normalize,
     lang: Lang,
     *,
-    fmt: str,
+    fmt: Callable[[float, Lang], str],
     hatched: pd.DataFrame | None,
     dotted: pd.DataFrame | None,
     ylabel: bool,
@@ -1343,7 +1371,7 @@ def _draw_heat(
             ax.text(
                 j + 0.5,
                 i + 0.5,
-                _loc(fmt.format(value), lang),
+                fmt(float(value), lang),
                 ha="center",
                 va="center",
                 fontsize=FS_NOTE,
@@ -1370,7 +1398,7 @@ def _heat_figure(
     cmap: LinearSegmentedColormap,
     norm: Normalize,
     *,
-    fmt: str,
+    fmt: Callable[[float, Lang], str],
     colorbar_key: str,
     colorbar_ticks: list[float],
     colorbar_labels: list[str],
@@ -1434,7 +1462,17 @@ def fig_heatmap(
     """``s14_heatmap.png``: mean AUC of the AR(1) (left) and the variance (right) over the sweep.
 
     The colour scale is a single-hue violet ramp with fixed limits 0.5 to 1.0 so both panels are
-    comparable. Cells whose control group tips on its own more often than 20% are hatched.
+    comparable. Two marks sit on top of it.
+
+    Hatching (:data:`HEATMAP_TIPPED_LIMIT`)
+        The control group tips on its own in strictly more than 20% of its runs, so the AUC is
+        not a clean comparison. The test is strict (``>``). At sigma = 0.30 and duration 200 the
+        fraction (mean over seeds) is 0.2000 up to floating point (0.19999999999999998), exactly
+        on the limit, so that cell is *not* hatched; duration 400 (0.3544) is.
+    Dot (:data:`HEATMAP_EARLY_LIMIT`)
+        More than half of the ramp runs tip before 60% of the ramp.
+
+    AUC values below 1 are never rounded up to 1.00 (see :func:`auc_text`).
 
     Parameters
     ----------
@@ -1475,7 +1513,7 @@ def fig_heatmap(
         ],
         cmap,
         norm,
-        fmt="{:.2f}",
+        fmt=auc_text,
         colorbar_key="heat_colorbar",
         colorbar_ticks=[0.5, 0.75, 1.0],
         colorbar_labels=[_fixed(t, lang) for t in (0.5, 0.75, 1.0)],
@@ -1529,7 +1567,7 @@ def fig_tipped(
         ],
         cmap,
         norm,
-        fmt="{:.0%}",
+        fmt=lambda value, lang: _loc(f"{value:.0%}", lang),
         colorbar_key="tipped_colorbar",
         colorbar_ticks=[0.0, 0.5, 1.0],
         colorbar_labels=[_tick(t, lang) for t in (0.0, 0.5, 1.0)],
@@ -1616,7 +1654,6 @@ def readme_results(lang: Lang, base: Baseline, out_dir: Path, *, n_runs: int = 3
         va="center",
         ha="right",
         fontsize=FS_NOTE,
-        linespacing=1.15,
     )
     series.text(
         30.0, -1.0, text("ramp", lang), color=PALETTE.ramp, fontsize=FS_NOTE, va="center", ha="left"
@@ -1655,11 +1692,21 @@ def readme_results(lang: Lang, base: Baseline, out_dir: Path, *, n_runs: int = 3
 # --------------------------------------------------------------------------------------------
 
 
-def make_all(lang: Lang, out_dir: Path | None = None, sweep_path: Path | None = None) -> list[Path]:
+def make_all(
+    lang: Lang,
+    out_dir: Path | None = None,
+    sweep_path: Path | None = None,
+    *,
+    readme_dir: Path | None = None,
+    confound_path: Path | None = None,
+) -> list[Path]:
     """Render every static figure for ``lang``.
 
-    Slide figures go to ``out_dir / lang`` (default ``results/figures/<lang>``). For
-    ``lang == "en"`` the four README figures are also written to ``docs/assets``.
+    Slide figures go to ``out_dir / lang`` (default ``results/figures/<lang>``), including the
+    backup figure ``b05_noise_confound.png`` when the confound summary exists. The four README
+    figures are English only and are written to ``docs/assets`` just when ``out_dir`` is ``None``
+    (the default run, as the CLI does) or to ``readme_dir`` if that is given. Passing an
+    ``out_dir`` therefore never touches the committed README assets.
 
     Parameters
     ----------
@@ -1669,6 +1716,12 @@ def make_all(lang: Lang, out_dir: Path | None = None, sweep_path: Path | None = 
         Base output directory; the language is appended.
     sweep_path : pathlib.Path, optional
         Sweep summary Parquet (default ``results/sweep_summary.parquet``).
+    readme_dir : pathlib.Path, optional
+        Directory for the README figures (``lang == "en"`` only). If omitted they go to
+        ``docs/assets`` when ``out_dir`` is ``None`` and are not written otherwise.
+    confound_path : pathlib.Path, optional
+        Confound summary (default ``results/confound.json``). If the file does not exist the
+        figure ``b05`` is skipped with a logged warning.
 
     Returns
     -------
@@ -1680,6 +1733,8 @@ def make_all(lang: Lang, out_dir: Path | None = None, sweep_path: Path | None = 
     FileNotFoundError
         If the sweep summary is missing (checked before anything is rendered).
     """
+    from tipping.viz import figures_extra  # imported here: figures_extra imports this module
+
     summary = load_summary(sweep_path)
     target = (out_dir if out_dir is not None else results_dir() / "figures") / lang
     base = compute_baseline()
@@ -1696,8 +1751,17 @@ def make_all(lang: Lang, out_dir: Path | None = None, sweep_path: Path | None = 
         fig_heatmap(lang, target, summary=summary),
         fig_tipped(lang, target, summary=summary),
     ]
-    if lang == "en":
-        assets = assets_dir()
+    confound = confound_path or results_dir() / figures_extra.SUMMARY_FILE
+    if confound.is_file():
+        paths.append(
+            figures_extra.make_confound_figure(
+                lang, target, summary=figures_extra.load_summary(confound)
+            )
+        )
+    else:
+        _LOG.warning("%s not found: skipping b05_noise_confound.png", confound)
+    assets = readme_dir if readme_dir is not None else assets_dir() if out_dir is None else None
+    if lang == "en" and assets is not None:
         paths += [
             readme_bifurcation(lang, assets),
             fig_signal(lang, assets, title=True, filename="fig_signal.png"),

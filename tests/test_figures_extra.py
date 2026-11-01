@@ -22,10 +22,11 @@ def _summary() -> dict[str, Any]:
     pooled_noise = {"variance": _indicator(1.0), "ar1": _indicator(0.5)}
     pooled_fold = {"variance": _indicator(1.0), "ar1": _indicator(0.99)}
     return {
+        "config": {"sigma_start": 0.05},
         "scenarios": {
             "noise_0.15": {"pooled": pooled_noise},
             "fold": {"pooled": pooled_fold},
-        }
+        },
     }
 
 
@@ -53,8 +54,8 @@ def test_text_has_both_languages() -> None:
 
 @pytest.mark.parametrize("lang", ["es", "en"])
 def test_confound_figure_is_written(lang: Lang, tmp_path: Path) -> None:
-    """The PNG is written at 200 dpi on a 13.33 x 5.8 in canvas."""
+    """The PNG is written at 200 dpi on an 11.5 x 5.0 in canvas."""
     path = make_confound_figure(lang, tmp_path, summary=_summary(), traces=_traces())
     assert path == tmp_path / "b05_noise_confound.png"
     image = mpimg.imread(path)
-    assert image.shape[:2] == (1160, 2666)
+    assert image.shape[:2] == (1000, 2300)

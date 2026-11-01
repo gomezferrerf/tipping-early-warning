@@ -13,22 +13,29 @@ import json
 from pathlib import Path
 from typing import Any
 
-import matplotlib as mpl
 import numpy as np
 from matplotlib.axes import Axes
-from matplotlib.figure import Figure
-from matplotlib.layout_engine import ConstrainedLayoutEngine
 from numpy.typing import NDArray
 
-from tipping.confound import IndicatorTraces, indicator_traces
+from tipping.confound import FOLD_R_END, IndicatorTraces, indicator_traces
 from tipping.paths import results_dir
+from tipping.viz.figures import (
+    DPI,
+    FS_NOTE,
+    SIZE_WIDE,
+    _axes,
+    _fixed,
+    _new_figure,
+    auc_text,
+    styled,
+)
 from tipping.viz.labels import text
-from tipping.viz.style import PALETTE, Lang, style_axes, style_params
+from tipping.viz.style import PALETTE, Lang
 
 FloatArray = NDArray[np.float64]
 
-SIZE = (13.33, 5.8)
-DPI = 200
+SIZE = SIZE_WIDE
+"""Canvas (inches), the same as the other wide slide figures (2.3:1)."""
 SIGMA_END = 0.15
 """Final noise amplitude shown in the figure (three times the baseline 0.05)."""
 TRACE_SEED = 1
@@ -36,12 +43,12 @@ SUMMARY_FILE = "confound.json"
 
 _TEXT: dict[str, dict[str, str]] = {
     "row_noise": {
-        "es": "A · el ruido sube, r = 0\n(σ: 0.05 → {sigma})",
-        "en": "A · noise rises, r = 0\n(σ: 0.05 → {sigma})",
+        "es": "A · el ruido sube, r = 0\n(σ: {sigma0} → {sigma})",
+        "en": "A · noise rises, r = 0\n(σ: {sigma0} → {sigma})",
     },
     "row_fold": {
-        "es": "B · el sistema se acerca\na la bifurcación (r: 0 → −0.6)",
-        "en": "B · the system approaches\nthe fold (r: 0 → −0.6)",
+        "es": "B · el sistema se acerca\na la bifurcación (r: 0 → {r})",
+        "en": "B · the system approaches\nthe fold (r: 0 → {r})",
     },
     "variance": {"es": "varianza", "en": "variance"},
     "ar1": {"es": "AR(1)", "en": "AR(1)"},
@@ -92,10 +99,6 @@ def load_summary(path: Path | None = None) -> dict[str, Any]:
     return parsed
 
 
-def _fmt(value: float) -> str:
-    return f"{value:.2f}"
-
-
 def _draw_auc_panel(ax: Axes, summary: dict[str, Any], lang: Lang, sigma_end: float) -> None:
     """Paired dot chart: AUC of variance and AR(1), noise-ramp scenario and fold scenario."""
     rows = (
@@ -103,21 +106,27 @@ def _draw_auc_panel(ax: Axes, summary: dict[str, Any], lang: Lang, sigma_end: fl
         (0.0, summary["scenarios"]["fold"]["pooled"], "row_fold"),
     )
     offset = 0.17
+    sigma0 = _fixed(float(summary["config"]["sigma_start"]), lang)
+    fields = {
+        "sigma0": sigma0,
+        "sigma": _fixed(sigma_end, lang),
+        "r": _fixed(FOLD_R_END, lang, 1),
+    }
     ax.axvline(0.5, color=PALETTE.muted, lw=1.4, ls=(0, (5, 3)), zorder=1)
     ax.text(
         0.505,
         -0.6,
         _label("chance", lang),
         color=PALETTE.muted,
-        fontsize=14,
+        fontsize=FS_NOTE,
         va="center",
     )
     for y, pooled, key in rows:
         ax.text(
             0.405,
             y + 0.55,
-            _label(key, lang, sigma=f"{sigma_end:.2f}"),
-            fontsize=14,
+            _label(key, lang, **fields),
+            fontsize=FS_NOTE,
             va="center",
             ha="left",
             linespacing=1.15,
@@ -141,7 +150,7 @@ def _draw_auc_panel(ax: Axes, summary: dict[str, Any], lang: Lang, sigma_end: fl
                 linestyle="none",
                 zorder=4,
             )
-            label = f"{_label(ind, lang)}  {_fmt(auc)}"
+            label = f"{_label(ind, lang)}  {auc_text(auc, lang)}"
             # Labels sit left of the dot, except when the dot is near the left edge of the axes.
             left = auc > 0.75
             ax.text(
@@ -150,14 +159,14 @@ def _draw_auc_panel(ax: Axes, summary: dict[str, Any], lang: Lang, sigma_end: fl
                 label,
                 ha="right" if left else "left",
                 va="center",
-                fontsize=14,
+                fontsize=FS_NOTE,
             )
     ax.set_xlim(0.4, 1.03)
     ax.set_ylim(-0.8, 2.35)
     ax.set_yticks([])
-    ax.set_xticks([0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+    ticks = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    ax.set_xticks(ticks, [_fixed(t, lang, 1) for t in ticks])
     ax.set_xlabel(_label("auc_axis", lang))
-    ax.tick_params(labelsize=14)
     ax.grid(False)
     ax.spines["left"].set_visible(False)
 
@@ -191,18 +200,13 @@ def _draw_trace(
             _label(key, lang),
             color=color,
             va="center",
-            fontsize=14,
+            fontsize=FS_NOTE,
         )
     ax.set_xlim(float(t[0]), float(t[-1]) + 330.0)
     ax.set_ylabel(ylabel)
-    ax.tick_params(labelsize=14)
 
 
-def _rc() -> dict[str, object]:
-    """Return the rc parameters of the figure: project look, regular-font math text."""
-    return {**style_params(), "mathtext.default": "regular"}
-
-
+@styled
 def make_confound_figure(
     lang: Lang,
     out_dir: Path | None = None,
@@ -238,32 +242,14 @@ def make_confound_figure(
     pathlib.Path
         Path of the PNG file.
     """
-    with mpl.rc_context(_rc()):  # type: ignore[arg-type]
-        return _draw_confound_figure(lang, out_dir, summary, traces, sigma_end)
-
-
-def _draw_confound_figure(
-    lang: Lang,
-    out_dir: Path | None,
-    summary: dict[str, Any] | None,
-    traces: IndicatorTraces | None,
-    sigma_end: float,
-) -> Path:
-    """Build and save the figure (must run inside the style context)."""
     data = load_summary() if summary is None else summary
     tr = indicator_traces(sigma_end, seed=TRACE_SEED) if traces is None else traces
 
-    fig = Figure(figsize=SIZE, layout="constrained")
-    engine = fig.get_layout_engine()
-    if isinstance(engine, ConstrainedLayoutEngine):
-        engine.set(wspace=0.08, hspace=0.06)
+    fig = _new_figure(*SIZE)
     grid = fig.add_gridspec(2, 2, width_ratios=[1.0, 1.08])
-    ax_auc = fig.add_subplot(grid[:, 0])
-    style_axes(ax_auc, grid=False)
-    ax_var = fig.add_subplot(grid[0, 1])
-    ax_ar1 = fig.add_subplot(grid[1, 1], sharex=ax_var)
-    for ax in (ax_var, ax_ar1):
-        style_axes(ax)
+    ax_auc = _axes(fig, lang, grid[:, 0])
+    ax_var = _axes(fig, lang, grid[0, 1], grid=True)
+    ax_ar1 = _axes(fig, lang, grid[1, 1], grid=True, sharex=ax_var)
 
     _draw_auc_panel(ax_auc, data, lang, sigma_end)
     _draw_trace(
@@ -272,7 +258,7 @@ def _draw_confound_figure(
         tr.variance_noise,
         tr.variance_control,
         scale=1e3,
-        ylabel=text("rolling_variance", lang),
+        ylabel=text("rolling_variance", lang).replace(" (", "\n("),  # two lines: fits the height
         lang=lang,
         label_gap=0.0,
     )

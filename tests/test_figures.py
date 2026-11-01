@@ -13,6 +13,7 @@ import pytest
 from matplotlib.image import imread
 
 from tipping.viz import figures as fig
+from tipping.viz import figures_extra
 from tipping.viz.labels import LABELS, LANGS, text
 from tipping.viz.style import Lang
 
@@ -60,11 +61,31 @@ def test_every_label_has_both_languages(lang: Lang) -> None:
 
 def test_spanish_labels_use_decimal_commas() -> None:
     assert not [k for k, t in LABELS.items() if re.search(r"\d\.\d", t["es"])], "es uses ','"
+    extra = figures_extra._TEXT
+    assert not [k for k, t in extra.items() if re.search(r"\d\.\d", t["es"])], "es uses ','"
     assert fig._fixed(-2.0, "es") == "−2,00"
     assert fig._fixed(-2.0, "en") == "−2.00"
     assert fig._short(-0.385, "es") == "−0,385"
     assert fig._tick(0.25, "es") == "0,25"
     assert fig._tick(-1.0, "en") == "−1"
+
+
+def test_auc_text_never_rounds_a_value_below_one_up_to_one() -> None:
+    assert fig.auc_text(0.8712, "es") == "0,87"
+    assert fig.auc_text(0.8712, "en") == "0.87"
+    assert fig.auc_text(0.9977, "es") == "0,998"
+    assert fig.auc_text(0.999834, "es") == "0,9998"
+    assert fig.auc_text(0.999834, "en") == "0.9998"
+    assert fig.auc_text(1.0, "es") == "1,00"
+    for value in (0.9951, 0.99951, 0.999951):
+        assert float(fig.auc_text(value, "en")) < 1.0
+
+
+def test_confound_text_fields_are_localised() -> None:
+    fields = {"sigma0": "0,05", "sigma": "0,15", "r": "−0,6"}
+    label = figures_extra._label("row_noise", "es", **fields)
+    assert "σ: 0,05 → 0,15" in label
+    assert "r: 0 → −0,6" in figures_extra._label("row_fold", "es", **fields)
 
 
 def test_spanish_never_says_colapso() -> None:
@@ -179,23 +200,84 @@ def test_indicator_bands_ignore_samples_after_the_tip(baseline: fig.Baseline) ->
     assert np.all(bands.ar1[1][finite] <= bands.ar1[2][finite])
 
 
-def test_make_all_writes_expected_files(
+@pytest.fixture
+def fast_make_all(
     baseline: fig.Baseline, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+) -> tuple[Path, Path]:
+    """Shrink the slow simulations inside ``make_all``; return (summary path, fake assets dir)."""
     summary_path = tmp_path / "sweep_summary.parquet"
     _synthetic_summary().to_parquet(summary_path)
     assets = tmp_path / "assets"
     monkeypatch.setattr(fig, "assets_dir", lambda: assets)
     monkeypatch.setattr(fig, "compute_baseline", lambda: baseline)
-    # Shrink the slow simulations inside make_all (module globals are looked up at call time).
+    # Module globals are looked up at call time.
     monkeypatch.setattr(fig, "fig_signal", partial(fig.fig_signal, n_runs=20, duration=150.0))
     monkeypatch.setattr(fig, "fig_hook", partial(fig.fig_hook, n_runs=SMALL))
     monkeypatch.setattr(fig, "fig_experiment", partial(fig.fig_experiment, n_runs=SMALL))
     monkeypatch.setattr(fig, "readme_results", partial(fig.readme_results, n_runs=SMALL))
-    written = fig.make_all("en", tmp_path / "out", summary_path)
+    return summary_path, assets
+
+
+def test_make_all_default_directory_writes_readme_assets(
+    fast_make_all: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summary_path, assets = fast_make_all
+    monkeypatch.setattr(fig, "results_dir", lambda: tmp_path / "results")
+    written = fig.make_all("en", sweep_path=summary_path)
     names = {p.name for p in written}
     assert {"s01_hook.png", "s04_landscapes.png", "s14_heatmap.png", "b04_tipped.png"} <= names
     assert {"fig_bifurcation.png", "fig_signal.png", "fig_results.png", "fig_heatmap.png"} <= names
     assert all(p.is_file() for p in written)
-    assert (tmp_path / "out" / "en" / "s10_signal.png").is_file()
+    assert (tmp_path / "results" / "figures" / "en" / "s10_signal.png").is_file()
     assert (assets / "fig_heatmap.png").is_file()
+    assert "b05_noise_confound.png" not in names  # no confound.json in the fake results dir
+
+
+def test_make_all_with_out_dir_leaves_readme_assets_alone(
+    fast_make_all: tuple[Path, Path], tmp_path: Path
+) -> None:
+    summary_path, assets = fast_make_all
+    written = fig.make_all("en", tmp_path / "out", summary_path)
+    assert (tmp_path / "out" / "en" / "s10_signal.png").is_file()
+    assert not assets.exists()
+    assert not {"fig_bifurcation.png", "fig_results.png"} & {p.name for p in written}
+
+
+def test_make_all_readme_dir_is_explicit(fast_make_all: tuple[Path, Path], tmp_path: Path) -> None:
+    summary_path, assets = fast_make_all
+    readme = tmp_path / "readme"
+    fig.make_all("en", tmp_path / "out", summary_path, readme_dir=readme)
+    assert (readme / "fig_heatmap.png").is_file()
+    assert not assets.exists()
+
+
+def test_make_all_includes_the_confound_figure_when_its_summary_exists(
+    fast_make_all: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summary_path, _ = fast_make_all
+    confound = tmp_path / "confound.json"
+    confound.write_text("{}", encoding="utf-8")
+    calls: list[tuple[str, Path]] = []
+
+    def fake(lang: Lang, out_dir: Path | None = None, **_: object) -> Path:
+        assert out_dir is not None
+        calls.append((lang, out_dir))
+        return out_dir / "b05_noise_confound.png"
+
+    monkeypatch.setattr(figures_extra, "make_confound_figure", fake)
+    monkeypatch.setattr(figures_extra, "load_summary", lambda path=None: {})
+    written = fig.make_all("es", tmp_path / "out", summary_path, confound_path=confound)
+    assert calls == [("es", tmp_path / "out" / "es")]
+    assert "b05_noise_confound.png" in {p.name for p in written}
+
+
+def test_make_all_skips_the_confound_figure_with_a_warning(
+    fast_make_all: tuple[Path, Path], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    summary_path, _ = fast_make_all
+    with caplog.at_level("WARNING", logger=fig.__name__):
+        written = fig.make_all(
+            "es", tmp_path / "out", summary_path, confound_path=tmp_path / "missing.json"
+        )
+    assert "b05_noise_confound.png" not in {p.name for p in written}
+    assert "skipping b05_noise_confound.png" in caplog.text
