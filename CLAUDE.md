@@ -10,13 +10,17 @@ Use `uv`; `just` recipes are shortcuts for the same lines. Must work in PowerShe
 
 | Task | Command |
 | --- | --- |
-| Setup | `uv sync --group dev --extra deck` |
-| Test | `uv run pytest` (slow statistical tests are marked `slow`) |
+| Setup | `uv sync --locked --group dev --extra deck` |
+| Test | `uv run pytest` (all) or `uv run pytest -m "not slow"` (fast set; `slow` marks the long statistical tests) |
 | Lint / format | `uv run ruff check` / `uv run ruff format` |
 | Typecheck | `uv run mypy` (strict, covers `src` and `tests`) |
 | All checks | `just check` |
 | Baseline run | `uv run tipping simulate` |
-| Reproduce everything | `uv run tipping reproduce` |
+| Confound experiment | `uv run tipping confound` (writes `results/confound.*`) |
+| Key numbers | `uv run tipping key-numbers` (writes `results/key_numbers.json`; needs the sweep) |
+| Slide deck | `uv run tipping deck [--repo-url URL]` or `just deck` (needs the `deck` extra) |
+| README results block | `uv run python scripts/fill_readme.py` (`--check` to verify) |
+| Reproduce everything | `uv run tipping reproduce` (sweep, confound, key numbers, figures es and en, animations es) |
 
 Before declaring work done, run ruff check, ruff format --check, mypy and pytest. Before pushing, also run `UV_PYTHON=3.11 uv run mypy` (PowerShell: `$env:UV_PYTHON="3.11"; uv run mypy`): CI tests Python 3.11, which resolves older NumPy stubs than 3.13 and can reject code that 3.13 accepts.
 
@@ -28,14 +32,18 @@ Before declaring work done, run ruff check, ruff format --check, mypy and pytest
 | `theory.py` | Ornstein–Uhlenbeck variance, ACF, AR(1), `predicted_indicators` |
 | `simulate.py` | `Ramp`, `simulate` (Euler–Maruyama, vectorised over runs), `first_crossing` |
 | `indicators.py` | `detrend`, `rolling_variance`, `rolling_ar1`, `kendall_tau_per_run`, `compute_indicators` |
-| `evaluate.py` | `auc`, `tpr_at_fpr`, `bootstrap_ci`, `evaluate_pair` |
+| `evaluate.py` | `auc`, `tpr_at_fpr`, `bootstrap_ci`, `analysis_stop` (the one definition of where a run's analysis ends), `run_taus`, `evaluate_pair` |
+| `confound.py` | Noise-amplitude confound experiment (`sigma_end` ramps, scenarios, `results/confound.*`) |
+| `key_numbers.py` | Every number quoted in the talk, written to `results/key_numbers.json` |
 | `config.py` | pydantic models and `load_config`; YAML lives in `configs/` |
 | `paths.py` | `project_root`, `results_dir`, `assets_dir`, `data_dir`; honours `TIPPING_ROOT` |
 | `sweep.py`, `io.py` | sigma x duration x seed sweep; Parquet read/write (`results/sweep.parquet`) |
 | `viz/style.py` | palette and matplotlib rcParams (do not change casually) |
 | `viz/labels.py` | figure text per language |
-| `viz/figures.py`, `viz/animations.py` | PNG figures and MP4 animations |
-| `cli.py` | typer app `tipping`: `simulate`, `sweep`, `figures`, `animate`, `reproduce` |
+| `viz/figures.py`, `viz/figures_extra.py`, `viz/animations.py` | PNG figures (`figures_extra`: the confound figure) and MP4 animations |
+| `cli.py` | typer app `tipping`: `simulate`, `sweep`, `confound`, `key-numbers`, `figures`, `animate`, `deck`, `reproduce` |
+
+Outside the package: `deck/build_deck.py` (Spanish slide deck, reads `results/key_numbers.json`), `deck/export_notes.py` (speaker notes from `deck/guion.md`) and `scripts/fill_readme.py` (README results block).
 
 Heavy modules (matplotlib, imageio) are imported lazily inside CLI commands.
 
@@ -51,7 +59,7 @@ Heavy modules (matplotlib, imageio) are imported lazily inside CLI commands.
 
 ## Testing expectations
 
-Tests encode physics oracles, not snapshots of whatever the code printed. Examples: roots satisfy the cubic; three real roots iff `|r| < 2/(3*sqrt(3))`; `growth_rate` vanishes at the fold; the OU variance `sigma^2/(2|lambda|)` and AR(1) `exp(lambda*dt)` match long simulations at small sigma; null AUC is about 0.5. Any number quoted in docs or slides must come from code that was run. Statistical tests use fixed seeds and tolerances justified by the sample size; mark expensive ones `@pytest.mark.slow`.
+Tests encode physics oracles, not snapshots of whatever the code printed. Examples: roots satisfy the cubic; three real roots iff `|r| < 2/(3*sqrt(3))`; `growth_rate` vanishes at the fold; the OU variance `sigma^2/(2|lambda|)` and AR(1) `exp(lambda*dt)` match long simulations at small sigma; null AUC is about 0.5. Any number quoted in docs or slides must come from code that was run. Statistical tests use fixed seeds and tolerances justified by the sample size; mark expensive ones `@pytest.mark.slow`. The `*_ci_lo` / `*_ci_hi` columns of the sweep summary come from three seeds: call them a range over seeds, never a confidence interval.
 
 ## Do not
 
@@ -68,7 +76,7 @@ Tests encode physics oracles, not snapshots of whatever the code printed. Exampl
 
 - Figures: `uv run tipping figures --lang en` (README, writes `docs/assets/`) and `--lang es` (deck). `just figures` runs both.
 - Animations: `uv run tipping animate --lang es` (MP4 plus poster PNG; needs no system ffmpeg, it uses `imageio-ffmpeg`).
-- Sweep: `uv run tipping sweep`, then `figures` again so the heatmap uses the new table.
-- Deck: `uv run python deck/build_deck.py` (or `just deck`), output in `deck/build/`.
+- Sweep: `uv run tipping sweep`, then `confound`, `key-numbers` and `figures` again so everything uses the new table.
+- Deck: `uv run tipping deck` (or `just deck`, which refreshes the key numbers first), output in `deck/build/`.
 - Everything: `uv run tipping reproduce`.
-- After a sweep, update the text between `<!-- RESULTS:START -->` and `<!-- RESULTS:END -->` in `README.md` using numbers read from `results/`.
+- After a sweep, update the text between `<!-- RESULTS:START -->` and `<!-- RESULTS:END -->` in `README.md` with `uv run python scripts/fill_readme.py`; it reads only `results/`, so never type those numbers by hand.

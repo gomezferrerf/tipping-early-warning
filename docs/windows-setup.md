@@ -27,7 +27,7 @@ The project may be handed to you as a single file, `tipping-early-warning.bundle
 ```powershell
 git clone tipping-early-warning.bundle tipping-early-warning
 cd tipping-early-warning
-uv sync --group dev --extra deck
+uv sync --locked --group dev --extra deck
 uv run pytest
 ```
 
