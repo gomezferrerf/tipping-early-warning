@@ -17,7 +17,7 @@ import numpy as np
 from matplotlib.axes import Axes
 from numpy.typing import NDArray
 
-from tipping.confound import FOLD_R_END, IndicatorTraces, indicator_traces
+from tipping.confound import RAMP_R_END, IndicatorTraces, indicator_traces
 from tipping.paths import results_dir
 from tipping.viz.figures import (
     DPI,
@@ -110,7 +110,7 @@ def _draw_auc_panel(ax: Axes, summary: dict[str, Any], lang: Lang, sigma_end: fl
     fields = {
         "sigma0": sigma0,
         "sigma": _fixed(sigma_end, lang),
-        "r": _fixed(FOLD_R_END, lang, 1),
+        "r": _fixed(RAMP_R_END, lang, 1),
     }
     ax.axvline(0.5, color=PALETTE.muted, lw=1.4, ls=(0, (5, 3)), zorder=1)
     ax.text(

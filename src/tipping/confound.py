@@ -74,8 +74,6 @@ system and turn the experiment into a different one.
 """
 RAMP_R_END = -0.6
 """Final control parameter of the ramp groups (``fold`` and ``mixed_<s>``), past the fold."""
-FOLD_R_END = RAMP_R_END
-"""Deprecated alias of :data:`RAMP_R_END`, kept until ``viz/figures_extra.py`` is updated."""
 POOLED_SEED = -1
 """Value of the ``seed`` column on the rows that pool all seeds."""
 
