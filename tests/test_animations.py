@@ -46,6 +46,29 @@ def test_text_has_both_languages_for_every_key() -> None:
         assert entry["en"].strip(), key
 
 
+def test_default_resolution_is_full_hd() -> None:
+    assert anim.DEFAULT_WIDTH == 1920
+    assert anim.DEFAULT_WIDTH * 9 // 16 == 1080
+    assert anim.FONT_BASE >= 22
+
+
+def test_spanish_labels_use_decimal_commas_and_english_points() -> None:
+    es, en = anim._tick_formatter("es"), anim._tick_formatter("en")
+    assert es(0.5) == "0,5"
+    assert en(0.5) == "0.5"
+    assert es(-0.3) == "\N{MINUS SIGN}0,3"
+    assert anim._r_label(-0.21, "es") == "r = \N{MINUS SIGN}0,21"
+    assert anim._r_label(0.3, "en") == "r = 0.30"
+
+
+def test_frame_counts_cap_holds_on_short_clips() -> None:
+    n_start, n_motion, n_end = anim._frame_counts(1.0, 30, 5.0, 5.0)
+    assert n_start + n_motion + n_end == 30
+    assert n_motion > 0
+    n_start, n_motion, n_end = anim._frame_counts(14.5, 30, *anim.A2_HOLDS)
+    assert (n_start, n_end) == (15, 30)
+
+
 def test_bifurcation_smoke(tmp_path: Path) -> None:
     video, poster = anim.animate_bifurcation("en", tmp_path, duration=1.0, width=LOW_RES)
     _check_clip(video, poster)

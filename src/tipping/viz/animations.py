@@ -13,7 +13,7 @@
   Indicator curves stop where the analysis would stop (``detrend_window`` samples before the
   tip), because the centred detrending is contaminated by the jump after that.
 
-All frames are 1280x720, 30 fps, H.264 ``yuv420p`` with ``+faststart`` (PowerPoint compatible),
+All frames are 1920x1080, 30 fps, H.264 ``yuv420p`` with ``+faststart`` (PowerPoint compatible),
 encoded with the ffmpeg binary shipped by ``imageio-ffmpeg``. Everything is precomputed once and
 only line data / clip boxes change from frame to frame.
 """
@@ -36,7 +36,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 from matplotlib.transforms import Bbox, TransformedBbox
 from numpy.typing import NDArray
 
@@ -46,6 +46,7 @@ from tipping.model import (
     FOLD_R,
     classify_equilibria,
     drift,
+    growth_rate,
     lower_branch,
     middle_branch,
     potential,
@@ -53,6 +54,7 @@ from tipping.model import (
 )
 from tipping.paths import default_config_path, results_dir
 from tipping.simulate import Ramp, Trajectories, derive_seeds, first_crossing, simulate
+from tipping.theory import ou_variance
 from tipping.viz.style import PALETTE, Lang, style_axes, style_params
 
 FloatArray = NDArray[np.float64]
@@ -76,16 +78,19 @@ _TEXT: dict[str, dict[str, str]] = {
         "es": "Fluctuaciones mayores y más lentas",
         "en": "Fluctuations grow and slow down",
     },
-    "a2_note": {
-        "es": "corrida ilustrativa \u00b7 \u03c3 = {sigma}",
-        "en": "illustrative run \u00b7 \u03c3 = {sigma}",
-    },
     "a3_variance": {"es": "Varianza", "en": "Variance"},
     "a3_ar1": {"es": "AR(1)", "en": "AR(1)"},
     "a3_window": {"es": "ventana", "en": "window"},
     "a3_ramp": {"es": "rampa", "en": "ramp"},
     "a3_control": {"es": "control", "en": "control"},
-    "a3_caption": {"es": "Salto al otro valle", "en": "Jump to the other valley"},
+    "a3_caption": {
+        "es": "Varianza y AR(1) suben antes del salto",
+        "en": "Variance and AR(1) rise before the jump",
+    },
+    "a3_note": {
+        "es": "an\u00e1lisis hasta poco antes del pliegue",
+        "en": "analysis stops just before the fold",
+    },
 }
 
 
@@ -94,15 +99,27 @@ def _text(key: str, lang: Lang) -> str:
     return _TEXT[key][lang]
 
 
-def _sigma_label(sigma: float, lang: Lang) -> str:
-    """Format ``sigma`` with two decimals (decimal comma in Spanish)."""
-    text = f"{sigma:.2f}"
-    return text.replace(".", ",") if lang == "es" else text
+def _loc(number: str, lang: Lang) -> str:
+    """Localise a formatted number: decimal comma for Spanish, point for English."""
+    return number.replace(".", ",") if lang == "es" else number
 
 
-def _r_label(r: float) -> str:
-    """Format the running control-parameter readout with a typographic minus."""
-    return f"r = {r:.2f}".replace("-", "\N{MINUS SIGN}")
+def _tick_formatter(lang: Lang) -> FuncFormatter:
+    """Tick formatter with a typographic minus and the language's decimal mark."""
+    return FuncFormatter(lambda v, _pos: _loc(f"{v:g}".replace("-", "\N{MINUS SIGN}"), lang))
+
+
+def _localise_ticks(lang: Lang, *axes: Axes) -> None:
+    """Apply :func:`_tick_formatter` to both axes of every given ``Axes``."""
+    fmt = _tick_formatter(lang)
+    for ax in axes:
+        ax.xaxis.set_major_formatter(fmt)
+        ax.yaxis.set_major_formatter(fmt)
+
+
+def _r_label(r: float, lang: Lang) -> str:
+    """Format the running control-parameter readout (typographic minus, localised decimals)."""
+    return _loc(f"r = {r:.2f}".replace("-", "\N{MINUS SIGN}"), lang)
 
 
 # --------------------------------------------------------------------------------------
@@ -110,19 +127,22 @@ def _r_label(r: float) -> str:
 # --------------------------------------------------------------------------------------
 FIG_W_IN = 12.8
 FIG_H_IN = 7.2
-DEFAULT_WIDTH = 1280
-FONT_BASE = 16
-FONT_LABEL = 18
-FONT_TITLE = 20
-FONT_CAPTION = 20
+DEFAULT_WIDTH = 1920
+FONT_BASE = 22
+FONT_LABEL = 24
+FONT_TITLE = 26
+FONT_CAPTION = 26
+FONT_NOTE = 18
 LINE_W = 2.4
 
 A1_R_START = 0.3
 A1_R_END = -0.6
 A1_RATE = 0.005  # |dr/dt| of the slow ramp (time units^-1)
 A1_DURATION = 16.0
+A1_HOLDS = (1.0, 1.6)  # seconds held before and after the motion
 
-A2_DURATION = 14.0
+A2_DURATION = 14.5
+A2_HOLDS = (0.5, 1.0)  # seconds held before and after the motion
 A2_SIGMA = 0.16  # illustrative only: about 3x the baseline noise so the jitter is visible
 A2_SEED = 4
 A2_R_END = -0.34
@@ -132,6 +152,7 @@ A2_MIN_X = 0.2  # the realization must stay above this level (does not tip)
 A3_N_RAMP = 60  # ramp runs to choose the realization from
 A3_N_CONTROL = 200  # control runs behind the median and the 10-90% band
 A3_DURATION = 19.5
+A3_HOLDS = (0.8, 2.7)  # seconds held before and after the motion
 
 _X_LIM = (-1.6, 1.6)
 
@@ -221,7 +242,7 @@ def _render(
     poster_frame : int
         Index of the frame saved as the poster.
     dpi : float
-        Figure dpi (the poster is exported at twice this resolution).
+        Figure dpi (the poster is exported at 4/3 of it: 2560x1440 for a 1920-pixel clip).
     """
     video_path.parent.mkdir(parents=True, exist_ok=True)
     writer = FFMpegWriter(
@@ -245,16 +266,20 @@ def _render(
             update(i)
             writer.grab_frame()
     update(poster_frame)
-    fig.savefig(poster_path, dpi=2 * dpi, facecolor=PALETTE.background)
+    fig.savefig(poster_path, dpi=dpi * 4.0 / 3.0, facecolor=PALETTE.background)
 
 
 def _frame_counts(
-    duration: float, fps: int, start_frac: float, end_frac: float
+    duration: float, fps: int, hold_start: float, hold_end: float
 ) -> tuple[int, int, int]:
-    """Split a clip into (start-hold, motion, end-hold) frame counts."""
+    """Split a clip into (start-hold, motion, end-hold) frame counts.
+
+    Holds are given in seconds and capped at a quarter of the clip so that very short test clips
+    still contain motion.
+    """
     n = max(round(duration * fps), 4)
-    n_start = max(round(start_frac * n), 1)
-    n_end = max(round(end_frac * n), 1)
+    n_start = max(min(round(hold_start * fps), n // 4), 1)
+    n_end = max(min(round(hold_end * fps), n // 4), 1)
     return n_start, n - n_start - n_end, n_end
 
 
@@ -287,13 +312,18 @@ def _pixels_per_unit(ax: Axes) -> tuple[float, float]:
 
 
 def _valley_markers(ax: Axes) -> tuple[Line2D, Line2D]:
-    """Create the (stable, unstable) equilibrium markers drawn on a landscape."""
+    """Create the (stable, unstable) equilibrium markers: filled blue dot, hollow coral ring.
+
+    Both are drawn above the ball so that the dot under the ball stays visible.
+    """
     (stable,) = ax.plot(
-        [], [], ls="none", marker="o", ms=9, color=PALETTE.stable, zorder=3, clip_on=False
-    )
+        [], [], ls="none", marker="o", ms=11, color=PALETTE.stable, mec=PALETTE.background,
+        mew=1.5, zorder=6, clip_on=False,
+    )  # fmt: skip
     (unstable,) = ax.plot(
-        [], [], ls="none", marker="o", ms=9, color=PALETTE.unstable, zorder=3, clip_on=False
-    )
+        [], [], ls="none", marker="o", ms=13, mfc=PALETTE.background, mec=PALETTE.unstable,
+        mew=3, zorder=6, clip_on=False,
+    )  # fmt: skip
     return stable, unstable
 
 
@@ -316,6 +346,7 @@ def _style_landscape_axes(ax: Axes, y_lim: tuple[float, float], lang: Lang) -> N
     ax.tick_params(labelsize=FONT_BASE)
     ax.set_xlabel(_text("state_axis", lang), fontsize=FONT_LABEL)
     ax.set_ylabel(_text("energy_axis", lang), fontsize=FONT_LABEL)
+    _localise_ticks(lang, ax)
 
 
 # --------------------------------------------------------------------------------------
@@ -421,7 +452,7 @@ def animate_bifurcation(
         Frames per second.
     duration : float, default 16.0
         Clip length in seconds (a short hold at both ends is included).
-    width : int, default 1280
+    width : int, default 1920
         Output width in pixels (multiple of 128; the height is ``width * 9 / 16``).
 
     Returns
@@ -432,7 +463,7 @@ def animate_bifurcation(
     out = out_dir if out_dir is not None else results_dir() / "animations" / lang
     video, poster = out / "a1_bifurcation.mp4", out / "a1_bifurcation_poster.png"
     fig, dpi = _new_figure(width)
-    n_start, n_motion, n_end = _frame_counts(duration, fps, 0.06, 0.10)
+    n_start, n_motion, n_end = _frame_counts(duration, fps, *A1_HOLDS)
     traj = deterministic_fall()
     r_m, x_m = _a1_frames(traj, n_motion)
     r_f = np.concatenate([np.full(n_start, r_m[0]), r_m, np.full(n_end, r_m[-1])])
@@ -440,7 +471,7 @@ def animate_bifurcation(
     n_frames = len(r_f)
 
     # Left: landscape.
-    ax_l = fig.add_axes((0.075, 0.19, 0.40, 0.64))
+    ax_l = fig.add_axes((0.095, 0.20, 0.385, 0.60))
     _style_landscape_axes(ax_l, (-1.15, 1.45), lang)
     ax_l.set_title(_text("a1_title_left", lang), fontsize=FONT_TITLE, pad=14)
     xs = np.linspace(*_X_LIM, 400)
@@ -454,7 +485,7 @@ def animate_bifurcation(
     radius_px = 12.0 * dpi / 72.0
 
     # Right: bifurcation diagram (fixed curves) with the moving marker.
-    ax_r = fig.add_axes((0.575, 0.19, 0.405, 0.64))
+    ax_r = fig.add_axes((0.595, 0.20, 0.385, 0.60))
     _plain_axes(ax_r)
     rs = np.linspace(-0.7, 0.45, 900)
     ax_r.plot(rs, upper_branch(rs), color=PALETTE.stable, lw=LINE_W + 0.4, zorder=2)
@@ -469,7 +500,8 @@ def animate_bifurcation(
     ax_r.set_yticks([-1, 0, 1])
     ax_r.tick_params(labelsize=FONT_BASE)
     ax_r.set_xlabel("r", fontsize=FONT_LABEL)
-    ax_r.set_ylabel("x", fontsize=FONT_LABEL, rotation=0, labelpad=14)
+    ax_r.set_ylabel("x", fontsize=FONT_LABEL, rotation=0, labelpad=16)
+    _localise_ticks(lang, ax_r)
     ax_r.set_title(_text("a1_title_right", lang), fontsize=FONT_TITLE, pad=14)
     ax_r.text(
         0.45, 1.3, _text("stable", lang), color=PALETTE.stable, fontsize=FONT_BASE, ha="right"
@@ -478,8 +510,9 @@ def animate_bifurcation(
         0.45, -0.95, _text("stable", lang), color=PALETTE.stable, fontsize=FONT_BASE, ha="right"
     )
     ax_r.text(
-        0.17, 0.22, _text("unstable", lang), color=PALETTE.unstable, fontsize=FONT_BASE, ha="left"
-    )
+        0.45, 0.25, _text("unstable", lang), color=PALETTE.unstable_text, fontsize=FONT_BASE,
+        ha="right",
+    )  # fmt: skip
     vline = ax_r.axvline(float(r_f[0]), color=PALETTE.ink, lw=1.4, zorder=3)
     (trail,) = ax_r.plot([], [], color=PALETTE.ink, lw=1.8, alpha=0.55, zorder=3)
     (marker,) = ax_r.plot(
@@ -500,7 +533,7 @@ def animate_bifurcation(
         vline.set_xdata([r, r])
         trail.set_data(r_f[: i + 1], x_f[: i + 1])
         marker.set_data([r], [x])
-        readout.set_text(_r_label(r))
+        readout.set_text(_r_label(r, lang))
 
     poster_frame = int(np.argmin(np.abs(r_f[: n_start + n_motion] + 0.37)))
     _render(fig, update, n_frames, fps, video, poster, poster_frame, dpi)
@@ -539,7 +572,7 @@ def noisy_ball_realization(
     tipping.simulate.Trajectories
         One run, sampled every :data:`A2_SAMPLE_DT` time units.
     """
-    _, n_motion, _ = _frame_counts(duration, fps, 0.0, 0.07)
+    _, n_motion, _ = _frame_counts(duration, fps, *A2_HOLDS)
     ramp = Ramp(0.0, A2_R_END, (n_motion - 1) * A2_SAMPLE_DT)
     sim = baseline_config().sim
     return simulate(
@@ -573,9 +606,9 @@ def animate_noisy_ball(
         (default ``results/animations/<lang>``).
     fps : int, default 30
         Frames per second.
-    duration : float, default 14.0
-        Clip length in seconds.
-    width : int, default 1280
+    duration : float, default 14.5
+        Clip length in seconds (holds included).
+    width : int, default 1920
         Output width in pixels (multiple of 128).
 
     Returns
@@ -586,15 +619,17 @@ def animate_noisy_ball(
     out = out_dir if out_dir is not None else results_dir() / "animations" / lang
     video, poster = out / "a2_noisy_ball.mp4", out / "a2_noisy_ball_poster.png"
     fig, dpi = _new_figure(width)
-    n_start, n_motion, n_end = _frame_counts(duration, fps, 0.0, 0.07)
-    del n_start
+    n_start, n_motion, n_end = _frame_counts(duration, fps, *A2_HOLDS)
     tr = noisy_ball_realization(duration, fps)
     t, r_s, x_s = tr.t, tr.r, tr.x[:, 0]
-    n_frames = n_motion + n_end
+    n_frames = n_start + n_motion + n_end
     x_star = upper_branch(r_s)
     x_hill = middle_branch(r_s)
+    # Linearised (Ornstein-Uhlenbeck) standard deviation around the valley bottom.
+    std_eff = np.sqrt(ou_variance(tr.sigma, growth_rate(x_star)))
+    caption_from = n_start + round(0.6 * n_motion)
 
-    ax_l = fig.add_axes((0.075, 0.54, 0.905, 0.38))
+    ax_l = fig.add_axes((0.085, 0.585, 0.895, 0.365))
     _style_landscape_axes(ax_l, (-0.8, 1.0), lang)
     xs = np.linspace(*_X_LIM, 500)
     (land,) = ax_l.plot(xs, potential(xs, 0.0), color=PALETTE.ink, lw=3.2, zorder=2)
@@ -609,14 +644,18 @@ def animate_noisy_ball(
         0.02, 0.93, "", transform=ax_l.transAxes, fontsize=FONT_TITLE, ha="left", va="top"
     )
 
-    ax_s = fig.add_axes((0.075, 0.20, 0.905, 0.17))
+    ax_s = fig.add_axes((0.085, 0.205, 0.895, 0.24))
     style_axes(ax_s, grid=True)
     ax_s.set_xlim(0.0, float(t[-1]))
-    ax_s.set_ylim(0.0, 1.25)
+    ax_s.set_ylim(0.0, 1.35)
     ax_s.set_yticks([0.0, 0.5, 1.0])
     ax_s.tick_params(labelsize=FONT_BASE)
     ax_s.set_xlabel(_text("time_axis", lang), fontsize=FONT_LABEL)
-    ax_s.set_ylabel("x", fontsize=FONT_LABEL, rotation=0, labelpad=12)
+    ax_s.set_ylabel("x", fontsize=FONT_LABEL, rotation=0, labelpad=16)
+    _localise_ticks(lang, ax_s)
+    ax_s.fill_between(
+        t, x_star - std_eff, x_star + std_eff, color=PALETTE.stable_fill, lw=0, zorder=1
+    )
     ax_s.plot(t, x_star, color=PALETTE.stable, lw=LINE_W, zorder=2)
     ax_s.plot(t, x_hill, color=PALETTE.unstable, lw=LINE_W, ls=(0, (4, 3)), zorder=2)
     (trace,) = ax_s.plot([], [], color=PALETTE.ink, lw=1.8, zorder=3)
@@ -624,20 +663,13 @@ def animate_noisy_ball(
         [], [], ls="none", marker="o", ms=10, color=PALETTE.ink, mec=PALETTE.background, mew=1.5,
         zorder=4, clip_on=False,
     )  # fmt: skip
-    fig.text(
-        0.5, 0.035, _text("a2_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
+    caption = fig.text(
+        0.5, 0.02, _text("a2_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
     )
-    fig.text(
-        0.012,
-        0.035,
-        _text("a2_note", lang).format(sigma=_sigma_label(A2_SIGMA, lang)),
-        ha="left",
-        fontsize=FONT_BASE,
-        color=PALETTE.muted,
-    )
+    caption.set_visible(False)
 
     def update(i: int) -> None:
-        k = min(i, len(t) - 1)
+        k = min(max(i - n_start, 0), len(t) - 1)
         r, x = float(r_s[k]), float(x_s[k])
         land.set_ydata(potential(xs, r))
         _update_valley_markers(mk_stable, mk_unstable, r)
@@ -645,10 +677,12 @@ def animate_noisy_ball(
         ball.set_data([bx], [by])
         trace.set_data(t[: k + 1], x_s[: k + 1])
         head.set_data([t[k]], [x])
-        readout.set_text(_r_label(r))
+        readout.set_text(_r_label(r, lang))
+        caption.set_visible(i >= caption_from)
 
-    late = slice(int(0.80 * n_motion), n_motion)
-    poster_frame = late.start + int(np.argmax(np.abs(x_s[late] - x_star[late])))
+    late = slice(n_start + int(0.80 * n_motion), n_start + n_motion)
+    k_late = np.arange(late.start, late.stop) - n_start
+    poster_frame = late.start + int(np.argmax(np.abs(x_s[k_late] - x_star[k_late])))
     _render(fig, update, n_frames, fps, video, poster, poster_frame, dpi)
     return video, poster
 
@@ -835,9 +869,9 @@ def animate_rolling_window(
         (default ``results/animations/<lang>``).
     fps : int, default 30
         Frames per second.
-    duration : float, default 20.0
+    duration : float, default 19.5
         Clip length in seconds (holds included).
-    width : int, default 1280
+    width : int, default 1920
         Output width in pixels (multiple of 128).
     data : RollingData, optional
         Precomputed series (default :func:`rolling_window_data`).
@@ -851,7 +885,7 @@ def animate_rolling_window(
     video, poster = out / "a3_rolling_window.mp4", out / "a3_rolling_window_poster.png"
     d = data if data is not None else rolling_window_data()
     fig, dpi = _new_figure(width)
-    n_start, n_motion, n_end = _frame_counts(duration, fps, 0.04, 0.14)
+    n_start, n_motion, n_end = _frame_counts(duration, fps, *A3_HOLDS)
 
     # Frames -> fractional sample index (hold, slow-motion run until just after the tip, hold).
     last = min(d.tip_index + round(50.0 / d.sample_interval), len(d.t) - 1)
@@ -861,12 +895,11 @@ def animate_rolling_window(
     t_axis = float(np.ceil(d.t[last] / 100.0) * 100.0)
     dt_s = d.sample_interval
     w_time = d.window_samples * dt_s
-    tip_t = d.tip_index * dt_s
 
-    left, wid = 0.095, 0.88
-    ax_x = fig.add_axes((left, 0.635, wid, 0.33))
-    ax_v = fig.add_axes((left, 0.435, wid, 0.17), sharex=ax_x)
-    ax_a = fig.add_axes((left, 0.235, wid, 0.17), sharex=ax_x)
+    left, wid = 0.125, 0.835
+    ax_x = fig.add_axes((left, 0.585, wid, 0.385))
+    ax_v = fig.add_axes((left, 0.385, wid, 0.155), sharex=ax_x)
+    ax_a = fig.add_axes((left, 0.19, wid, 0.155), sharex=ax_x)
     for ax in (ax_x, ax_v, ax_a):
         style_axes(ax, grid=True)
         ax.tick_params(labelsize=FONT_BASE)
@@ -876,7 +909,7 @@ def animate_rolling_window(
     ax_a.set_xlabel(_text("time_axis", lang), fontsize=FONT_LABEL)
     ax_x.set_ylim(-1.45, 1.3)
     ax_x.set_yticks([-1, 0, 1])
-    ax_x.set_ylabel("x", fontsize=FONT_LABEL, rotation=0, labelpad=12)
+    ax_x.set_ylabel("x", fontsize=FONT_LABEL, rotation=0, labelpad=16)
 
     # Sliding window band.
     band = Rectangle(
@@ -915,26 +948,31 @@ def animate_rolling_window(
     arts_v, head_v = indicator_axes(ax_v, d.var_ramp, d.var_ctrl, _text("a3_variance", lang), v_top)
     arts_a, head_a = indicator_axes(ax_a, d.ar1_ramp, d.ar1_ctrl, _text("a3_ar1", lang), 1.0)
     ax_a.yaxis.set_major_locator(MaxNLocator(nbins=2, prune="lower"))
-    ax_v.yaxis.set_major_formatter(lambda v, _pos: f"{v:.3f}".rstrip("0").rstrip(".") if v else "0")
+    _localise_ticks(lang, ax_x, ax_v, ax_a)
     ax_v.text(0.012, 0.9, _text("a3_ramp", lang), transform=ax_v.transAxes, color=PALETTE.ramp,
               fontsize=FONT_BASE, va="top", ha="left")  # fmt: skip
     ax_v.text(
         0.012, 0.55, _text("a3_control", lang), transform=ax_v.transAxes,
-        color=PALETTE.control, fontsize=FONT_BASE, va="top", ha="left",
+        color=PALETTE.control_text, fontsize=FONT_BASE, va="top", ha="left",
     )  # fmt: skip
 
     box = _reveal_box()
     for ax, arts in ((ax_x, [line_x]), (ax_v, arts_v), (ax_a, arts_a)):
         _clip_to_reveal(arts, ax, box)
-    caption = fig.text(
-        0.5, 0.025, _text("a3_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
+    fig.text(
+        0.5, 0.02, _text("a3_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
     )
-    caption.set_visible(False)
+    note = ax_a.text(
+        0.99, 0.06, _text("a3_note", lang), transform=ax_a.transAxes, fontsize=FONT_NOTE,
+        color=PALETTE.muted, ha="right", va="bottom",
+    )  # fmt: skip
+    note.set_visible(False)
 
     def update(i: int) -> None:
         s = float(pos_f[i])
         t_now = s * dt_s
-        box.x1 = min(t_now / t_axis, 1.0)
+        box.x1 = max(min(t_now / t_axis, 1.0), 1e-4)
+        band.set_visible(t_now > 0.0)
         x0 = max(t_now - w_time, 0.0)
         band.set_x(x0)
         band.set_width(t_now - x0)
@@ -949,7 +987,7 @@ def animate_rolling_window(
                 )
             else:
                 head.set_data([], [])
-        caption.set_visible(t_now >= tip_t)
+        note.set_visible(s >= d.end_index)
 
     poster_frame = int(np.argmax(pos_f >= d.tip_index + 20.0 / dt_s))
     _render(fig, update, n_frames, fps, video, poster, poster_frame, dpi)
