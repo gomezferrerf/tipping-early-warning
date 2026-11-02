@@ -38,6 +38,14 @@ simulate:
 sweep:
     uv run tipping sweep
 
+# Run the noise-amplitude confound experiment and write results/confound.*.
+confound:
+    uv run tipping confound
+
+# Compute the numbers quoted in the talk and write results/key_numbers.json.
+key-numbers:
+    uv run tipping key-numbers
+
 # Render the static figures in Spanish (deck) and English (README).
 figures:
     uv run tipping figures --lang es
@@ -47,11 +55,11 @@ figures:
 animate:
     uv run tipping animate --lang es
 
-# Build the slide deck into deck/build/.
-deck:
-    uv run python deck/build_deck.py
+# Build the slide deck into deck/build/ (refreshes the key numbers first).
+deck: key-numbers
+    uv run tipping deck
 
-# Regenerate everything from scratch: simulation, sweep, figures, animations.
+# Regenerate everything: sweep, confound, key numbers, figures, animations.
 reproduce:
     uv run tipping reproduce
 

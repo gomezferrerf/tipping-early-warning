@@ -1,8 +1,14 @@
-"""Command-line interface: ``tipping simulate | sweep | figures | animate | reproduce``."""
+"""Command-line interface.
+
+``tipping simulate | sweep | confound | key-numbers | figures | animate | deck | reproduce``.
+"""
 
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import subprocess
+import sys
 import time
 from collections.abc import Callable
 from enum import StrEnum
@@ -14,7 +20,7 @@ import typer
 
 from tipping.config import ExperimentConfig, load_config
 from tipping.evaluate import Experiment, run_experiment
-from tipping.paths import default_config_path
+from tipping.paths import default_config_path, project_root
 from tipping.simulate import first_crossing
 
 app = typer.Typer(
@@ -147,6 +153,17 @@ def _do_sweep(config: Path | None, out_dir: Path | None) -> None:
     typer.echo(f"Sweep written to {path}")
 
 
+def _do_confound() -> None:
+    main = _load_entry("tipping.confound", "main", "confound")
+    parquet_path, json_path = main()
+    typer.echo(f"Confound experiment written to {parquet_path} and {json_path}")
+
+
+def _do_key_numbers() -> None:
+    main = _load_entry("tipping.key_numbers", "main", "key-numbers")
+    main()
+
+
 def _do_figures(lang: Language, out_dir: Path | None, sweep_path: Path | None) -> None:
     make_all = _load_entry("tipping.viz.figures", "make_all", "figures")
     for path in make_all(lang.value, out_dir, sweep_path):
@@ -166,6 +183,18 @@ def sweep(
 ) -> None:
     """Run the noise-by-duration parameter sweep and write the result tables."""
     _do_sweep(config, out_dir)
+
+
+@app.command()
+def confound() -> None:
+    """Run the noise-amplitude confound experiment and write results/confound.*."""
+    _do_confound()
+
+
+@app.command("key-numbers")
+def key_numbers() -> None:
+    """Compute every number quoted in the talk and write results/key_numbers.json."""
+    _do_key_numbers()
 
 
 @app.command()
@@ -191,9 +220,38 @@ def animate(
 
 
 @app.command()
+def deck(
+    repo_url: Annotated[
+        str | None, typer.Option(help="Repository URL shown on the last slide.")
+    ] = None,
+) -> None:
+    """Build the slide deck into deck/build/ (needs the deck extra and the results/ files)."""
+    script = project_root() / "deck" / "build_deck.py"
+    if not script.is_file():
+        typer.echo(
+            f"The deck script {script} was not found; run this from a source checkout.", err=True
+        )
+        raise typer.Exit(code=1)
+    if importlib.util.find_spec("pptx") is None:
+        typer.echo(
+            "The 'deck' command needs python-pptx. Install it with: uv sync --extra deck",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    command = [sys.executable, str(script)]
+    if repo_url is not None:
+        command += ["--repo-url", repo_url]
+    completed = subprocess.run(command, cwd=project_root(), check=False)
+    if completed.returncode != 0:
+        raise typer.Exit(code=completed.returncode)
+
+
+@app.command()
 def reproduce() -> None:
-    """Regenerate everything: sweep, figures (es and en) and animations (es)."""
+    """Regenerate everything: sweep, confound, key numbers, figures (es, en), animations (es)."""
     _do_sweep(None, None)
+    _do_confound()
+    _do_key_numbers()
     _do_figures(Language.es, None, None)
     _do_figures(Language.en, None, None)
     _do_animate(Language.es, None, 30)

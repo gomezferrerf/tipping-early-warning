@@ -61,6 +61,7 @@ def test_schema_and_row_count(frame: pd.DataFrame) -> None:
     assert ((frame["auc"] >= 0.0) & (frame["auc"] <= 1.0)).all()
 
 
+@pytest.mark.slow
 def test_deterministic() -> None:
     """The table is a pure function of the seeds."""
     kwargs = {"seeds": (3,), "sigma_ends": (0.15,), "sim": SIM, "indicators": IND, "n_boot": 10}
@@ -134,6 +135,7 @@ def test_ramp_groups_follow_the_simulation_settings() -> None:
     assert scenarios["noise_0.15"].pos.r_end == 0.0
 
 
+@pytest.mark.slow
 def test_main_writes_parquet_and_json(tmp_path: Path) -> None:
     """main() writes both artefacts with the keys the deck build reads."""
     parquet_path, json_path = main(tmp_path, n_runs=20, seeds=(1,), sigma_ends=(0.15,), n_boot=10)
