@@ -24,6 +24,7 @@ LABELS: dict[str, dict[str, str]] = {
     # --- landscapes / bifurcation diagram ----------------------------------------------
     "r_caption": {"es": "r = {r}", "en": "r = {r}"},
     "stable": {"es": "estable", "en": "stable"},
+    "legend_fold": {"es": "◆ borde", "en": "◆ fold"},
     "unstable": {"es": "inestable", "en": "unstable"},
     "semistable": {"es": "semiestable", "en": "semistable"},
     "bistable": {"es": "biestable", "en": "bistable"},
@@ -69,7 +70,10 @@ LABELS: dict[str, dict[str, str]] = {
     "rolling_ar1": {"es": "AR(1) móvil", "en": "rolling AR(1)"},
     "band_10_90": {"es": "percentiles 10–90 %", "en": "10–90% percentiles"},
     "kendall_ar1": {"es": "τ de Kendall del AR(1)", "en": "Kendall τ of the AR(1)"},
-    "threshold": {"es": "umbral: 5 % de\nfalsos positivos", "en": "threshold: 5%\nfalse positives"},
+    "threshold": {
+        "es": "umbral: 5 % de\nfalsas alarmas",
+        "en": "5 % false-alarm\nthreshold",
+    },
     "auc": {"es": "AUC = {auc}", "en": "AUC = {auc}"},
     # --- heatmaps (s14, b04) -------------------------------------------------------------------
     "heat_ar1": {"es": "AR(1)", "en": "AR(1)"},

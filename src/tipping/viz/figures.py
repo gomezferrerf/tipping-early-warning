@@ -59,15 +59,16 @@ FloatArray = NDArray[np.float64]
 P = ParamSpec("P")
 R = TypeVar("R")
 
-SIZE_STD = (11.5, 5.75)
-"""Slide canvas (inches, 2:1): the deck places figures about 11 in wide, so text keeps its size."""
 SIZE_WIDE = (11.5, 5.0)
-"""Slide canvas (inches, 2.3:1) for the three-panel and heatmap figures."""
-FS_TICK = 15
-FS_NOTE = 16
-FS_TITLE = 17
-FS_CAPTION = 20
-FS_BIG = 22
+"""Slide canvas (inches, 2.3:1), shared by every slide figure so the deck can centre them at one
+width. Designed for 11.5 in: shown 10.4 in wide the text is still at least 14 pt."""
+FS_TICK = 18
+FS_NOTE = 19
+FS_TITLE = 20
+FS_CAPTION = 22
+FS_BIG = 24
+FS_CELL = 16
+"""Numbers inside heatmap cells (a 6-character value such as 0,9997 must fit a cell)."""
 DPI = 200
 FOLD_JUMP_LOW = -2.0 / math.sqrt(3.0)
 """Equilibrium reached after the upward fold ``r = -r_c`` is crossed (``-2/sqrt(3)``)."""
@@ -82,16 +83,18 @@ HEATMAP_TIPPED_LIMIT = 0.2
 HEATMAP_EARLY_LIMIT = 0.5
 """Cells where more ramp runs than this tip before 60% of the ramp are dotted."""
 SWEEP_FILE = "sweep_summary.parquet"
+HATCH_ALPHA = 0.25
+"""Opacity of the hatch lines: light, so the numbers stay legible."""
 
 _LOG = logging.getLogger(__name__)
 
 _DASH = (0, (5, 3))
 _DOT_STYLE: dict[str, Any] = {
     "marker": "o",
-    "ms": 8,
+    "ms": 15,
     "mfc": PALETTE.ink,
     "mec": PALETTE.background,
-    "mew": 1.4,
+    "mew": 1.8,
 }
 _LANDSCAPE_RS = (0.0, -0.2, -FOLD_R)
 _README_LANDSCAPE_RS = (0.0, -0.2, -FOLD_R, -0.5)
@@ -107,7 +110,7 @@ def _rc() -> dict[str, object]:
     return {
         **style_params(),
         "mathtext.default": "regular",
-        "hatch.linewidth": 1.2,
+        "hatch.linewidth": 0.8,
         "font.size": FS_TICK,
         "xtick.labelsize": FS_TICK,
         "ytick.labelsize": FS_TICK,
@@ -185,11 +188,11 @@ def _short(value: float, lang: Lang) -> str:
 
 
 def auc_text(value: float, lang: Lang) -> str:
-    """Format an AUC with two decimals, never rounding a value below 1 up to ``1,00``.
+    """Format an AUC (two decimals, three above 0.98), never rounding a value below 1 up to 1.
 
     A value such as 0.9996 would print as 1.00 and read as perfect separation, so the number of
-    decimals grows (up to 6) until the text is no longer a rounded 1. The same rule as the deck's
-    number formatter.
+    decimals grows (up to 6) until the text is no longer a rounded 1. Above 0.98 the minimum is
+    three decimals, so the slide's 0,995 is not shown as 0,99 in another figure.
 
     Parameters
     ----------
@@ -201,9 +204,9 @@ def auc_text(value: float, lang: Lang) -> str:
     Returns
     -------
     str
-        For example ``"0,87"``, ``"0,998"``, ``"0,9996"`` or ``"1,00"`` (only for exactly 1).
+        For example ``"0,87"``, ``"0,995"``, ``"0,9996"`` or ``"1,00"`` (only for exactly 1).
     """
-    for digits in range(2, 7):
+    for digits in range(3 if 0.98 < value < 1.0 else 2, 7):
         out = f"{value:.{digits}f}"
         if value >= 1.0 or float(out) < 1.0:
             return _loc(out, lang)
@@ -532,12 +535,12 @@ def _draw_landscape(
             style = {"marker": "D", "mfc": PALETTE.muted, "mec": PALETTE.background, "mew": 1.6}
         ax.plot([eq.x], [v], ls="none", ms=11, zorder=3, **style)  # type: ignore[arg-type]
     # The ball rests on top of its equilibrium marker (offset in points, not data units).
-    lift = ScaledTranslation(0.0, 16.0 / 72.0, ax.figure.dpi_scale_trans)
+    lift = ScaledTranslation(0.0, 20.0 / 72.0, ax.figure.dpi_scale_trans)
     ax.plot(
         [ball_x],
         [float(potential(ball_x, r))],
         marker="o",
-        ms=17,
+        ms=15,
         mfc=PALETTE.ink,
         mec=PALETTE.background,
         mew=1.6,
@@ -621,7 +624,15 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
         fontsize=FS_NOTE,
         linespacing=1.15,
     )
-    ax.text(0.0, 1.74, text("bistable", lang), ha="center", va="top", fontsize=FS_NOTE)
+    # In the hysteresis figure "r decreasing" sits at the top centre, so the label moves left.
+    ax.text(
+        -0.2 if hysteresis else 0.0,
+        1.74,
+        text("bistable", lang),
+        ha="center",
+        va="top",
+        fontsize=FS_NOTE,
+    )
     stable_label = text("stable", lang)
     ax.text(
         0.57,
@@ -645,7 +656,7 @@ def _draw_bifurcation(ax: Axes, lang: Lang, *, hysteresis: bool) -> None:
         0.11,
         0.04,
         text("unstable", lang),
-        color=PALETTE.unstable,
+        color=PALETTE.unstable_text,
         ha="left",
         va="bottom",
         fontsize=FS_NOTE,
@@ -762,7 +773,7 @@ def _draw_band_panel(
         x_label,
         float(control[1, last]) * scale,
         text("control", lang),
-        color=PALETTE.control,
+        color=PALETTE.control_text,
         va="center",
         fontsize=FS_NOTE,
     )
@@ -771,11 +782,8 @@ def _draw_band_panel(
     ax.set_xlabel(text("time", lang))
     ax.set_ylabel(text(ylabel_key, lang))
     if legend:
-        handles = [
-            Line2D([], [], color=PALETTE.ramp, lw=2.4, label=text("ramp", lang)),
-            Line2D([], [], color=PALETTE.control, lw=2.4, label=text("control", lang)),
-            Patch(facecolor=PALETTE.grid, label=text("band_10_90", lang)),
-        ]
+        # The groups are named directly at the end of their curves; only the band needs a key.
+        handles = [Patch(facecolor=PALETTE.grid, label=text("band_10_90", lang))]
         ax.legend(handles=handles, loc="upper left", fontsize=FS_NOTE)
 
 
@@ -799,7 +807,7 @@ def _draw_tau_hist(
             float(edges[mode]) + 0.025,
             float(counts[mode]) + 0.02 * top,
             text(key, lang),
-            color=color,
+            color=PALETTE.control_text if key == "control" else color,
             ha="center",
             va="bottom",
             fontsize=FS_NOTE,
@@ -906,7 +914,7 @@ def fig_bifurcation(lang: Lang, out_dir: Path | None = None) -> Path:
     pathlib.Path
         The written PNG.
     """
-    fig = _new_figure(*SIZE_STD)
+    fig = _new_figure(*SIZE_WIDE)
     ax = _axes(fig, lang, fig.add_gridspec(1, 1)[0, 0])
     _draw_bifurcation(ax, lang, hysteresis=False)
     return _save(fig, out_dir or _default_dir(lang), "s05_bifurcation.png")
@@ -928,7 +936,7 @@ def fig_hysteresis(lang: Lang, out_dir: Path | None = None) -> Path:
     pathlib.Path
         The written PNG.
     """
-    fig = _new_figure(*SIZE_STD)
+    fig = _new_figure(*SIZE_WIDE)
     ax = _axes(fig, lang, fig.add_gridspec(1, 1)[0, 0])
     _draw_bifurcation(ax, lang, hysteresis=True)
     return _save(fig, out_dir or _default_dir(lang), "s07_hysteresis.png")
@@ -954,7 +962,7 @@ def fig_noise(lang: Lang, out_dir: Path | None = None) -> Path:
     schedule = Ramp.constant(0.0, 12.0)
     clean = simulate(schedule, 0.0, 1, 0.01, 5, 1.3, NOISE_SEED)
     noisy = simulate(schedule, sigma, 1, 0.01, 5, 1.3, NOISE_SEED)
-    fig = _new_figure(*SIZE_STD)
+    fig = _new_figure(*SIZE_WIDE)
     grid = fig.add_gridspec(1, 2)
     axes = [_axes(fig, lang, grid[0, 0]), _axes(fig, lang, grid[0, 1])]
     captions = (text("no_noise", lang), text("with_noise", lang, sigma=_loc(f"{sigma:g}", lang)))
@@ -991,8 +999,8 @@ def _signal_figure(
         both = np.ones_like(both)  # tiny test sizes: fall back to all runs
     example = int(np.argmax(both))
     valleys = (
-        (steep, PALETTE.control, PALETTE.control_fill, "valley_steep", "lam_steep"),
-        (flat, PALETTE.ramp, PALETTE.ramp_fill, "valley_flat", "lam_flat"),
+        (steep, PALETTE.ink, PALETTE.grid, "valley_steep", "lam_steep"),
+        (flat, PALETTE.stable, PALETTE.stable_fill, "valley_flat", "lam_flat"),
     )
 
     fig = _new_figure(*size)
@@ -1021,7 +1029,7 @@ def _signal_figure(
         ax_h.stairs(counts, edges, color=color, lw=1.6, zorder=2)
         var = float(ou_variance(data.sigma, data.rate))
         pdf = np.exp(-(grid_x**2) / (2.0 * var)) / math.sqrt(2.0 * math.pi * var)
-        ax_h.plot(grid_x, pdf, color=PALETTE.ink, lw=1.6, ls=_DASH, zorder=3)
+        ax_h.plot(grid_x, pdf, color=PALETTE.muted, lw=1.8, ls=_DASH, zorder=3)
     ax_h.set_xlim(-0.2, 0.2)
     ax_h.set_ylim(bottom=0.0)
     ax_h.set_yticks([])
@@ -1036,7 +1044,7 @@ def _signal_figure(
     for data, color, _, _, _ in valleys:
         pooled = data.deviation[:, data.kept if data.kept.any() else slice(None)]
         ax_c.plot(lags, _pooled_acf(pooled, n_lags), "o", ms=6, color=color, zorder=2)
-        ax_c.plot(fine, ou_acf(data.rate, fine), color=PALETTE.ink, lw=1.6, ls=_DASH, zorder=3)
+        ax_c.plot(fine, ou_acf(data.rate, fine), color=PALETTE.muted, lw=1.8, ls=_DASH, zorder=3)
     lam_steep = _fixed(steep.rate, lang)
     lam_flat = _fixed(flat.rate, lang)
     # Colour-coded labels in the free upper-right area, in the same vertical order as the curves.
@@ -1044,7 +1052,7 @@ def _signal_figure(
         2.3,
         0.52,
         text("lam_flat", lang, lam=lam_flat),
-        color=PALETTE.ramp,
+        color=PALETTE.stable,
         fontsize=FS_NOTE,
         va="center",
     )
@@ -1052,7 +1060,7 @@ def _signal_figure(
         2.3,
         0.38,
         text("lam_steep", lang, lam=lam_steep),
-        color=PALETTE.control,
+        color=PALETTE.ink,
         fontsize=FS_NOTE,
         va="center",
     )
@@ -1072,7 +1080,7 @@ def _signal_figure(
         for data, color, _, key, _ in valleys
     ]
     handles.append(
-        Line2D([], [], color=PALETTE.ink, lw=1.6, ls=_DASH, label=text("theory_ou", lang))
+        Line2D([], [], color=PALETTE.muted, lw=1.8, ls=_DASH, label=text("theory_ou", lang))
     )
     # With a title the legend goes below the panels so the two never compete for the top edge.
     legend_loc: Literal["outside lower center", "outside upper center"] = (
@@ -1144,7 +1152,7 @@ def fig_experiment(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30)
     """
     ex = example_runs(n_runs)
     t_max = 1600.0
-    fig = _new_figure(*SIZE_STD)
+    fig = _new_figure(*SIZE_WIDE)
     grid = fig.add_gridspec(2, 1, hspace=0.08)
     top = _axes(fig, lang, grid[0, 0])
     bottom = _axes(fig, lang, grid[1, 0], sharex=top, sharey=top)
@@ -1153,7 +1161,7 @@ def fig_experiment(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30)
     for ax in (top, bottom):
         _draw_fold_line(ax, ex)
     top.tick_params(labelbottom=False)
-    top.set_ylim(-1.5, 1.6)
+    top.set_ylim(-1.5, 2.05)  # headroom: the panel labels sit above the curves
     top.set_xlim(0.0, t_max)
     top.set_yticks([-1.0, 0.0, 1.0])
     top.text(
@@ -1170,13 +1178,13 @@ def fig_experiment(lang: Lang, out_dir: Path | None = None, *, n_runs: int = 30)
         0.95,
         text("control_series", lang),
         transform=bottom.transAxes,
-        color=PALETTE.control,
+        color=PALETTE.control_text,
         va="top",
         fontsize=FS_TITLE,
     )
     top.text(
         ex.fold_time - 25.0,
-        1.5,
+        1.95,
         text("fold_time", lang, t=f"{ex.fold_time:.0f}"),
         va="top",
         ha="right",
@@ -1209,7 +1217,7 @@ def fig_results(lang: Lang, base: Baseline, out_dir: Path | None = None) -> Path
     exp, cfg = base.experiment, base.cfg.indicators
     ramp = indicator_bands(exp.ramp.x, exp.ramp.t, cfg)
     null = indicator_bands(exp.null.x, exp.null.t, cfg)
-    fig = _new_figure(*SIZE_STD)
+    fig = _new_figure(*SIZE_WIDE)
     grid = fig.add_gridspec(1, 2)
     left, right = _axes(fig, lang, grid[0, 0]), _axes(fig, lang, grid[0, 1])
     _draw_band_panel(
@@ -1247,7 +1255,7 @@ def fig_control(lang: Lang, base: Baseline, out_dir: Path | None = None) -> Path
     pathlib.Path
         The written PNG.
     """
-    fig = _new_figure(*SIZE_STD)
+    fig = _new_figure(*SIZE_WIDE)
     ax = _axes(fig, lang, fig.add_gridspec(1, 1)[0, 0])
     _draw_tau_hist(ax, base.experiment.result, lang, show_auc=True, cfg_fpr=base.cfg.indicators.fpr)
     return _save(fig, out_dir or _default_dir(lang), "s13_control.png")
@@ -1306,6 +1314,13 @@ def _sequential_cmap(light: str, dark: str, name: str) -> LinearSegmentedColorma
     return LinearSegmentedColormap.from_list(name, [light, dark])
 
 
+def _mix(start: str, end: str, weight: float) -> str:
+    """Return the colour ``weight`` of the way from ``start`` to ``end`` as a hex string."""
+    a, b = to_rgb(start), to_rgb(end)
+    red, green, blue = ((1.0 - weight) * x + weight * y for x, y in zip(a, b, strict=True))
+    return str(mpl.colors.to_hex((red, green, blue)))
+
+
 def _luminance(rgb: tuple[float, float, float]) -> float:
     linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
     return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
@@ -1343,10 +1358,10 @@ def _draw_heat(
             if not np.isfinite(value):
                 continue
             face = cmap(norm(value))
-            dark_cell = _luminance((face[0], face[1], face[2])) < 0.3
+            dark_cell = _luminance((face[0], face[1], face[2])) < 0.25
             ink = PALETTE.background if dark_cell else PALETTE.ink
             is_hatched = flags is not None and bool(flags[i, j])
-            effects = [pe.withStroke(linewidth=3.2, foreground=face)] if is_hatched else None
+            effects = [pe.withStroke(linewidth=4.5, foreground=face)] if is_hatched else None
             if is_hatched:
                 ax.add_patch(
                     Rectangle(
@@ -1355,15 +1370,15 @@ def _draw_heat(
                         1.0,
                         fill=False,
                         hatch="///",
-                        edgecolor=(*to_rgb(PALETTE.ink), 0.45),
+                        edgecolor=(*to_rgb(PALETTE.ink), HATCH_ALPHA),
                         lw=0,
                         zorder=2,
                     )
                 )
             if dots is not None and bool(dots[i, j]):
                 ax.plot(
-                    [j + 0.13],
-                    [i + 0.86],
+                    [j + 0.17],
+                    [i + 0.83],
                     ls="none",
                     **_DOT_STYLE,
                     zorder=4,
@@ -1374,7 +1389,7 @@ def _draw_heat(
                 fmt(float(value), lang),
                 ha="center",
                 va="center",
-                fontsize=FS_NOTE,
+                fontsize=FS_CELL,
                 color=ink,
                 zorder=3,
                 path_effects=effects,
@@ -1429,7 +1444,7 @@ def _heat_figure(
         handles.append(
             Patch(
                 facecolor=PALETTE.background,
-                edgecolor=(*to_rgb(PALETTE.ink), 0.45),
+                edgecolor=(*to_rgb(PALETTE.ink), HATCH_ALPHA),
                 hatch="///",
                 label=text("unreliable", lang),
             )
@@ -1500,9 +1515,10 @@ def fig_heatmap(
         If no table is given and the sweep summary does not exist.
     """
     table = load_summary(sweep_path) if summary is None else summary
-    # Endpoints: AUC = 0.5 is chance (no information), so it gets the lightest violet (the
-    # palette's fill tone); AUC = 1.0 is perfect separation, the full-strength ramp violet.
-    cmap = _sequential_cmap(PALETTE.ramp_fill, PALETTE.ramp, "auc_violet")
+    # Endpoints: AUC = 0.5 is chance (no information), so it gets the lightest violet: the
+    # palette's fill tone moved 20% towards the ramp violet, so the lowest cells still stand out
+    # from the cream background on a projector. AUC = 1.0 is the full-strength ramp violet.
+    cmap = _sequential_cmap(_mix(PALETTE.ramp_fill, PALETTE.ramp, 0.2), PALETTE.ramp, "auc_violet")
     norm = Normalize(vmin=0.5, vmax=1.0, clip=True)
     unreliable = _pivot(table, "frac_null_tipped") > HEATMAP_TIPPED_LIMIT
     fig = _heat_figure(
@@ -1643,7 +1659,7 @@ def readme_results(lang: Lang, base: Baseline, out_dir: Path, *, n_runs: int = 3
     _draw_series(series, ex, lang, which="ramp", t_max=1600.0)
     _draw_fold_line(series, ex)
     series.set_xlim(0.0, 1600.0)
-    series.set_ylim(-1.5, 1.6)
+    series.set_ylim(-1.5, 1.8)
     series.set_yticks([-1.0, 0.0, 1.0])
     series.set_xlabel(text("time", lang))
     series.set_ylabel(text("axis_x", lang), rotation=0, labelpad=12, va="center")
@@ -1660,9 +1676,9 @@ def readme_results(lang: Lang, base: Baseline, out_dir: Path, *, n_runs: int = 3
     )
     series.text(
         30.0,
-        1.22,
+        1.42,
         text("control", lang),
-        color=PALETTE.control,
+        color=PALETTE.control_text,
         fontsize=FS_NOTE,
         va="center",
         ha="left",

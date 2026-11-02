@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
 from numpy.typing import NDArray
 
 from tipping.confound import RAMP_R_END, IndicatorTraces, indicator_traces
@@ -57,7 +58,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "en": "AUC (scenario versus control)",
     },
     "chance": {"es": "azar", "en": "chance"},
-    "noise_group": {"es": "el ruido sube", "en": "noise rises"},
+    "noise_group": {"es": "σ sube (rampa de ruido)", "en": "σ rising (noise ramp)"},
     "control_group": {"es": "control", "en": "control"},
     "time": {"es": "tiempo", "en": "time"},
 }
@@ -180,7 +181,6 @@ def _draw_trace(
     scale: float,
     ylabel: str,
     lang: Lang,
-    label_gap: float,
 ) -> None:
     """Median and 10-90% band of one indicator, noise-ramp group (violet) versus control."""
     for q, color, fill in (
@@ -189,20 +189,7 @@ def _draw_trace(
     ):
         ax.fill_between(t, q[0] * scale, q[2] * scale, color=fill, lw=0, zorder=1)
         ax.plot(t, q[1] * scale, color=color, lw=2.4, zorder=2)
-    x_label = float(t[-1]) + 20.0
-    for q, color, key, shift in (
-        (noise, PALETTE.ramp, "noise_group", label_gap),
-        (control, PALETTE.control, "control_group", -label_gap),
-    ):
-        ax.text(
-            x_label,
-            float(q[1, -1]) * scale + shift,
-            _label(key, lang),
-            color=color,
-            va="center",
-            fontsize=FS_NOTE,
-        )
-    ax.set_xlim(float(t[0]), float(t[-1]) + 330.0)
+    ax.set_xlim(float(t[0]), float(t[-1]) + 20.0)
     ax.set_ylabel(ylabel)
 
 
@@ -260,7 +247,6 @@ def make_confound_figure(
         scale=1e3,
         ylabel=text("rolling_variance", lang).replace(" (", "\n("),  # two lines: fits the height
         lang=lang,
-        label_gap=0.0,
     )
     _draw_trace(
         ax_ar1,
@@ -270,7 +256,14 @@ def make_confound_figure(
         scale=1.0,
         ylabel=text("rolling_ar1", lang),
         lang=lang,
-        label_gap=0.06,
+    )
+    ax_var.legend(
+        handles=[
+            Line2D([], [], color=PALETTE.ramp, lw=2.4, label=_label("noise_group", lang)),
+            Line2D([], [], color=PALETTE.control, lw=2.4, label=_label("control_group", lang)),
+        ],
+        loc="upper left",
+        fontsize=FS_NOTE,
     )
     ax_ar1.set_ylim(0.0, 0.8)
     ax_ar1.set_xticks([200, 400, 600, 800, 1000, 1200])

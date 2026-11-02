@@ -24,7 +24,7 @@ class Palette:
 
     background: str = "#FBF8F3"
     ink: str = "#2F3A4A"
-    muted: str = "#8A93A0"
+    muted: str = "#667080"
     grid: str = "#E8E3DA"
 
     stable: str = "#2A78D6"
@@ -35,6 +35,10 @@ class Palette:
     ramp_fill: str = "#E1DBF2"
     control: str = "#159A6C"
     control_fill: str = "#D3EBDD"
+
+    # Darker variants for small TEXT labels (lines and fills keep the tones above).
+    control_text: str = "#0E7C57"
+    unstable_text: str = "#B84E1C"
 
 
 PALETTE = Palette()

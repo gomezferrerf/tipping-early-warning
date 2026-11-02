@@ -10,12 +10,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from matplotlib.colors import to_rgb
 from matplotlib.image import imread
 
 from tipping.viz import figures as fig
 from tipping.viz import figures_extra
 from tipping.viz.labels import LABELS, LANGS, text
-from tipping.viz.style import Lang
+from tipping.viz.style import PALETTE, Lang
 
 SMALL = 6  # runs per group in the tests
 
@@ -74,11 +75,36 @@ def test_auc_text_never_rounds_a_value_below_one_up_to_one() -> None:
     assert fig.auc_text(0.8712, "es") == "0,87"
     assert fig.auc_text(0.8712, "en") == "0.87"
     assert fig.auc_text(0.9977, "es") == "0,998"
+    assert fig.auc_text(0.9949, "es") == "0,995"  # three decimals above 0.98
+    assert fig.auc_text(0.9949, "en") == "0.995"
     assert fig.auc_text(0.999834, "es") == "0,9998"
     assert fig.auc_text(0.999834, "en") == "0.9998"
     assert fig.auc_text(1.0, "es") == "1,00"
     for value in (0.9951, 0.99951, 0.999951):
         assert float(fig.auc_text(value, "en")) < 1.0
+
+
+def _contrast(foreground: str, background: str) -> float:
+    """WCAG contrast ratio of two hex colours."""
+    lum = [fig._luminance(to_rgb(c)) for c in (foreground, background)]
+    return (max(lum) + 0.05) / (min(lum) + 0.05)
+
+
+def test_text_colours_have_enough_contrast_on_the_background() -> None:
+    for token in ("ink", "muted", "control_text", "unstable_text", "ramp"):
+        ratio = _contrast(getattr(PALETTE, token), PALETTE.background)
+        assert ratio >= 4.5, (token, ratio)
+
+
+def test_mix_moves_between_two_colours() -> None:
+    assert fig._mix("#000000", "#ffffff", 0.0) == "#000000"
+    assert fig._mix("#000000", "#ffffff", 1.0) == "#ffffff"
+    assert fig._mix("#000000", "#ffffff", 0.5) == "#808080"
+
+
+def test_fold_legend_label_names_the_diamond() -> None:
+    assert text("legend_fold", "es").startswith("◆")
+    assert text("legend_fold", "en") == "◆ fold"
 
 
 def test_confound_text_fields_are_localised() -> None:
