@@ -15,15 +15,19 @@ repos:
       - id: check-added-large-files
         args: [--maxkb=2048]
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.6
-    hooks:
-      - id: ruff
-        args: [--fix]
-      - id: ruff-format
-
+  # Local hooks run the tools locked in uv.lock, so they agree with CI.
   - repo: local
     hooks:
+      - id: ruff
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
       - id: mypy
         name: mypy
         entry: uv run mypy
