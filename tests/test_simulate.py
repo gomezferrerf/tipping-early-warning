@@ -104,8 +104,12 @@ def test_stationary_variance_and_ar1_at_r0() -> None:
     resid = x - x.mean(axis=0)
     var = float(np.mean(resid**2))
     ar1 = float(np.sum(resid[1:] * resid[:-1]) / np.sum(resid**2))
-    assert var == pytest.approx(var_theory, rel=0.10)
-    assert ar1 == pytest.approx(ar1_theory, abs=0.03)
+    # Tolerances: the estimates average 200 runs x 380 samples, so seed noise is below 1%
+    # (variance) and 0.003 (AR(1)). The linear theory itself is off by about +1.5% in the
+    # variance (cubic term plus Euler-Maruyama discretisation), hence rel=0.04, about 2.5 times
+    # that bias. A 10% error in sigma (21% in the variance) or a wrong AR(1) fails the test.
+    assert var == pytest.approx(var_theory, rel=0.04)
+    assert ar1 == pytest.approx(ar1_theory, abs=0.01)
 
 
 def test_first_crossing() -> None:
