@@ -47,6 +47,7 @@ from pptx.text.text import TextFrame
 from pptx.util import Emu, Pt
 
 from tipping.paths import project_root, results_dir
+from tipping.viz.labels import text as label_text
 from tipping.viz.style import PALETTE
 
 # --------------------------------------------------------------------------- constants
@@ -60,9 +61,14 @@ TITLE_H = 0.95
 TITLE_PT = 36
 CONTENT_TOP = 1.55
 CONTENT_BOTTOM = 6.85
-FOOTER_Y = 7.02
+FOOTER_Y = 7.08
 FOOTER_H = 0.3
-FOOTER_PT = 12
+FOOTER_PT = 14
+FIG_W = 10.4  # every static figure is centred at this width (aspect 2.3:1)
+FIG_X = (SLIDE_W - FIG_W) / 2
+FIG_Y = 1.55
+CAPTION_GAP = 0.1
+PANEL_CENTRES = (0.5455, 0.8675)  # centres of the distribution and ACF panels of s10
 BODY_PT = 28
 SMALL_PT = 24
 FORMULA_PT = 32
@@ -117,6 +123,8 @@ def fmt_es(value: float, decimals: int = 2) -> str:
     Two decimals by default; if that would show ``1,00`` for a value that is not exactly 1
     (e.g. 0.9998), switch to four decimals so the slide does not overstate the result.
     """
+    if value == 1.0:
+        return "1,00"
     text = f"{value:.{decimals}f}"
     if float(text) == 1.0 and value != 1.0 and value < 1.0:
         text = f"{value:.4f}"
@@ -466,20 +474,17 @@ def figure_slide(
     image: Path,
     alt: str,
     *,
-    reserve: float = 0.0,
     below: Callable[[Slide, float], None] | None = None,
     title_size: float = TITLE_PT,
 ) -> Slide:
-    """Title, one big figure and an optional row of text below it.
+    """Title, one figure centred at ``FIG_W`` and an optional text band under it.
 
-    ``reserve`` is the height (in) kept free under the figure; ``below(slide, y)`` draws
-    into that band, with ``y`` the top of the band.
+    ``below(slide, y)`` draws into the band, with ``y`` the top of the band.
     """
     slide = new_slide(prs, title, number, title_size=title_size)
-    avail = CONTENT_BOTTOM - CONTENT_TOP - reserve
-    _, (_, fy, _, fh) = add_picture_fit(slide, image, MARGIN, CONTENT_TOP, CONTENT_W, avail, alt)
+    _, (_, fy, _, fh) = add_picture_fit(slide, image, FIG_X, FIG_Y, FIG_W, 9.0, alt)
     if below is not None:
-        below(slide, fy + fh + 0.2)
+        below(slide, fy + fh + CAPTION_GAP)
     return slide
 
 
@@ -513,36 +518,43 @@ def video_slide(
 
 def formula_rows(
     slide: Slide,
-    rows: Sequence[tuple[str, str]],
+    rows: Sequence[tuple[str, str] | tuple[str, str, float]],
     y0: float,
     *,
-    size: float = 28,
-    pitch: float = 0.82,
+    pitch: float = 0.85,
     label_w: float = 3.0,
 ) -> float:
-    """Backup helper: muted label column + ink formula column. Returns the next free y."""
+    """Backup helper: muted 24 pt label column + ink formula column (32 pt unless given).
+
+    The label sits 0.08 in below the formula top so both share a baseline. Returns the
+    next free y.
+    """
     y = y0
-    for label, formula in rows:
-        add_text(slide, MARGIN, y + 0.07, label_w, 0.5, label, 20, MUTED)
+    for row in rows:
+        label, formula = row[0], row[1]
+        size = row[2] if len(row) == 3 else FORMULA_PT  # type: ignore[misc]
+        add_text(slide, MARGIN, y + 0.08, label_w, 0.5, label, SMALL_PT, MUTED)
         add_text(
-            slide, MARGIN + label_w + 0.2, y, CONTENT_W - label_w - 0.2, 0.7, formula, size, INK,
-            anchor=MSO_ANCHOR.MIDDLE,
-        )  # fmt: skip
+            slide, MARGIN + label_w + 0.2, y, CONTENT_W - label_w - 0.2, 0.7, formula, size, INK
+        )
         y += pitch
     return y
 
 
 # --------------------------------------------------------------------------- the slides
 def slide_01_hook(prs: PresentationType, ctx: Context) -> Slide:
-    """Build the hook: an almost empty slide with one tipping trajectory and the speaker line."""
-    slide = new_slide(prs, "¿Se puede ver venir un punto de quiebre?", 1, footer=False, title_y=0.5)
-    add_picture_fit(
-        slide, ctx.fig_dir / "s01_hook.png", 3.0, 1.65, SLIDE_W - MARGIN - 3.0, 4.1,
+    """Build the hook: one tipping trajectory, a big title and the speaker line."""
+    slide = new_slide(
+        prs, "¿Se puede ver venir un punto de quiebre?", 1, footer=False, title_size=44
+    )
+    _, (_, fy, _, fh) = add_picture_fit(
+        slide, ctx.fig_dir / "s01_hook.png", FIG_X, FIG_Y, FIG_W, 9.0,
         "Trayectoria ruidosa que baja lentamente y cae de golpe a otro valle.",
     )  # fmt: skip
-    add_text(slide, MARGIN, 5.95, CONTENT_W, 0.55, "Fernando", 32, INK, bold=True, name="Nombre")
+    y = fy + fh + CAPTION_GAP
+    add_text(slide, MARGIN, y, CONTENT_W, 0.5, "Fernando", 28, INK, bold=True, name="Nombre")
     add_text(
-        slide, MARGIN, 6.55, CONTENT_W, 0.5,
+        slide, MARGIN, y + 0.48, CONTENT_W, 0.45,
         "Sistemas Complejos · Universidad EIA · 3 de noviembre de 2026", SMALL_PT, MUTED,
         name="Evento",
     )  # fmt: skip
@@ -550,27 +562,27 @@ def slide_01_hook(prs: PresentationType, ctx: Context) -> Slide:
 
 
 def slide_02_idea(prs: PresentationType, ctx: Context) -> Slide:
-    """Idea and goal as a three-step visual with native shapes."""
-    slide = new_slide(prs, "Ver el punto de quiebre antes de que ocurra", 2)
+    """Idea and goal as a three-step visual with neutral native shapes."""
+    slide = new_slide(prs, "Ver el quiebre antes de que ocurra", 2)
     steps = [
-        ("1", "Simular un sistema con punto de quiebre", PALETTE.stable_fill, PALETTE.stable),
-        ("2", "Medir señales antes del punto de quiebre", PALETTE.ramp_fill, PALETTE.ramp),
-        ("3", "Comprobar si avisan, con control", PALETTE.control_fill, PALETTE.control),
+        ("1", "Simular un sistema con punto de quiebre"),
+        ("2", "Medir señales antes del punto de quiebre"),
+        ("3", "Comprobar si avisan, con control"),
     ]
     box_w, box_h, gap = 3.55, 3.4, (CONTENT_W - 3 * 3.55) / 2
     y = 2.1
-    for i, (num, text, fill, deep) in enumerate(steps):
+    for i, (num, text) in enumerate(steps):
         x = MARGIN + i * (box_w + gap)
         card = add_shape(
-            slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, box_w, box_h, fill=fill, name=f"Paso {num}"
+            slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, box_w, box_h, fill=GRID, name=f"Paso {num}"
         )
         card.adjustments[0] = 0.06
         badge = add_shape(
-            slide, MSO_SHAPE.OVAL, x + 0.35, y + 0.35, 0.85, 0.85, fill=deep, name=f"Número {num}"
+            slide, MSO_SHAPE.OVAL, x + 0.35, y + 0.35, 0.85, 0.85, fill=INK, name=f"Número {num}"
         )
-        shape_text(badge, num, 32, "#FFFFFF", bold=True, margin=0)
+        shape_text(badge, num, 32, BG, bold=True, margin=0)
         add_text(
-            slide, x + 0.35, y + 1.5, box_w - 0.7, 1.3, text, BODY_PT, INK, name=f"Texto {num}"
+            slide, x + 0.35, y + 1.5, box_w - 0.7, 1.4, text, BODY_PT, INK, name=f"Texto {num}"
         )
         if i < 2:
             arrow = add_shape(
@@ -595,11 +607,11 @@ def slide_03_tipping(prs: PresentationType, ctx: Context) -> Slide:
     """Build "what is a tipping point": one sentence, a schematic jump and three example chips."""
     slide = new_slide(prs, "¿Qué es un punto de quiebre?", 3)
     add_text(
-        slide, MARGIN, 1.95, 6.0, 3.2,
+        slide, MARGIN, 1.75, 6.0, 3.2,
         "Un cambio **pequeño** causa un salto **grande**.", 50, INK,
         anchor=MSO_ANCHOR.MIDDLE, name="Frase",
     )  # fmt: skip
-    cx, cy, cw, ch = 7.7, 1.95, 4.9, 3.2
+    cx, cy, cw, ch = 7.7, 1.75, 4.9, 3.2
     pts = _jump_curve(cw, ch)
     builder = slide.shapes.build_freeform(inch(cx + pts[0][0]), inch(cy + pts[0][1]))
     builder.add_line_segments([(inch(cx + px), inch(cy + py)) for px, py in pts[1:]], close=False)
@@ -610,16 +622,17 @@ def slide_03_tipping(prs: PresentationType, ctx: Context) -> Slide:
     curve.line.width = Pt(5)
     curve.shadow.inherit = False
     _drop_theme_effects(curve)
-    add_text(slide, cx, cy + 0.75, 3.2, 0.5, "cambio pequeño", BODY_PT, MUTED, name="Etiqueta 1")
+    drop_x = cx + 0.72 * cw
+    add_text(slide, cx, cy + 0.75, 3.2, 0.5, "cambio pequeño", BODY_PT, INK, name="Etiqueta 1")
     add_text(
-        slide, cx - 0.2, cy + 1.6, 3.4, 0.5, "salto grande", BODY_PT, MUTED,
+        slide, drop_x - 3.5, cy + 1.7, 3.3, 0.5, "salto grande", BODY_PT, INK,
         align=PP_ALIGN.RIGHT, name="Etiqueta 2",
     )  # fmt: skip
     chip_gap = 0.5
     chip_w = (CONTENT_W - 2 * chip_gap) / 3
     for i, label in enumerate(("clima", "ecosistemas", "mercados")):
         chip = add_shape(
-            slide, MSO_SHAPE.ROUNDED_RECTANGLE, MARGIN + i * (chip_w + chip_gap), 5.5,
+            slide, MSO_SHAPE.ROUNDED_RECTANGLE, MARGIN + i * (chip_w + chip_gap), 5.4,
             chip_w, 0.95, fill=GRID, name=f"Ejemplo {label}",
         )  # fmt: skip
         chip.adjustments[0] = 0.5
@@ -631,23 +644,29 @@ def slide_04_model(prs: PresentationType, ctx: Context) -> Slide:
     """Model: ball in valleys, deterministic part only."""
 
     def below(slide: Slide, y: float) -> None:
-        add_text(slide, MARGIN, y, 6.0, 0.7, "dx/dt = r + x − x³", FORMULA_PT, INK, name="Fórmula")
-        key = add_text(slide, 6.9, y + 0.08, 5.7, 0.6, "", SMALL_PT, INK, name="Leyenda")
+        add_text(slide, FIG_X, y, 3.9, 0.65, "dx/dt = r + x − x³", FORMULA_PT, INK, name="Fórmula")
+        key = add_text(
+            slide, FIG_X + 3.9, y + 0.1, FIG_W - 3.9, 0.5, "", SMALL_PT, INK,
+            align=PP_ALIGN.RIGHT, name="Leyenda",
+        )  # fmt: skip
         _legend_runs(key)
 
     return figure_slide(
         prs, 4, "Una bola en un paisaje de valles", ctx.fig_dir / "s04_landscapes.png",
         "Tres paisajes de potencial para r = 0, −0,2 y −0,385: el valle derecho se aplana.",
-        reserve=1.0, below=below,
+        below=below,
     )  # fmt: skip
 
 
 def _legend_runs(box: BaseShape) -> None:
-    """Fill the legend: stable glyph in blue, unstable glyph in coral, words in ink."""
+    """Fill the legend: stable dot, unstable hollow ring and fold diamond, words in ink."""
+    fold = label_text("legend_fold", "es")
+    glyph, word = fold[0], fold[1:].strip()
     paragraph = box.text_frame.paragraphs[0]
     for text, color in (
-        ("● ", PALETTE.stable), ("valle estable    ", INK),
-        ("○ ", PALETTE.unstable), ("cima inestable", INK),
+        ("● ", PALETTE.stable), ("valle estable   ", INK),
+        ("○ ", PALETTE.unstable_text), ("cima inestable   ", INK),
+        (f"{glyph} ", MUTED), (word, INK),
     ):  # fmt: skip
         run = paragraph.add_run()
         run.text = text
@@ -658,17 +677,18 @@ def slide_05_bifurcation(prs: PresentationType, ctx: Context) -> Slide:
     """Equilibria and stability: bifurcation diagram plus the growth rate formula."""
 
     def below(slide: Slide, y: float) -> None:
-        add_text(slide, MARGIN, y, 5.2, 0.7, "λ(x) = 1 − 3x²", FORMULA_PT, INK, name="Fórmula")
+        add_text(slide, FIG_X, y, 4.2, 0.65, "λ(x) = 1 − 3x²", FORMULA_PT, INK, name="Fórmula")
         add_text(
-            slide, 6.0, y + 0.08, 6.6, 0.6, "estable cuando λ < 0; el borde está en λ = 0",
-            SMALL_PT, INK, name="Lectura",
+            slide, FIG_X + 4.2, y + 0.1, FIG_W - 4.2, 0.5,
+            "estable cuando λ < 0; el borde está en λ = 0", SMALL_PT, INK,
+            align=PP_ALIGN.RIGHT, name="Lectura",
         )  # fmt: skip
 
     return figure_slide(
         prs, 5, "Al bajar r, un valle desaparece", ctx.fig_dir / "s05_bifurcation.png",
         "Diagrama de bifurcación: ramas estables (azul) e inestable (coral) con dos bifurcaciones "
         "silla-nodo en r = ±0,385.",
-        reserve=0.95, below=below,
+        below=below,
     )  # fmt: skip
 
 
@@ -688,7 +708,7 @@ def slide_07_hysteresis(prs: PresentationType, ctx: Context) -> Slide:
 
     def below(slide: Slide, y: float) -> None:
         add_text(
-            slide, MARGIN, y, CONTENT_W, 0.6,
+            slide, FIG_X, y, FIG_W, 0.6,
             "Al subir r de nuevo, el salto ocurre en otro lugar.", BODY_PT, INK, name="Lectura",
         )  # fmt: skip
 
@@ -696,15 +716,19 @@ def slide_07_hysteresis(prs: PresentationType, ctx: Context) -> Slide:
         prs, 7, "Ida y vuelta no son el mismo camino", ctx.fig_dir / "s07_hysteresis.png",
         "Diagrama con lazo de histéresis: el salto hacia abajo ocurre en r = −0,385 y el salto "
         "hacia arriba en r = +0,385.",
-        reserve=0.8, below=below,
+        below=below,
     )  # fmt: skip
 
 
 def slide_08_noise(prs: PresentationType, ctx: Context) -> Slide:
     """Stochastic physics: three-node timeline (native shapes), figure and formula."""
     slide = new_slide(prs, "El ruido es física desde 1905", 8)
-    nodes = [("1905", "Einstein"), ("1908", "Langevin"), ("1930", "Uhlenbeck–Ornstein")]
-    x_dot, y0, pitch = 0.95, 2.0, 1.3
+    nodes = [
+        ("1905", ["Einstein"]),
+        ("1908", ["Langevin"]),
+        ("1930", ["Uhlenbeck–", "Ornstein"]),
+    ]
+    x_dot, y0, pitch = 0.95, 1.95, 1.5
     spine = slide.shapes.add_connector(
         MSO_CONNECTOR.STRAIGHT,
         inch(x_dot),
@@ -722,18 +746,18 @@ def slide_08_noise(prs: PresentationType, ctx: Context) -> Slide:
             slide, MSO_SHAPE.OVAL, x_dot - 0.15, y, 0.3, 0.3, fill=INK, line=BG, line_pt=3,
             name=f"Nodo {year}",
         )  # fmt: skip
-        add_text(slide, 1.4, y - 0.18, 3.2, 0.55, year, 32, INK, bold=True, name=f"Año {year}")
-        add_text(slide, 1.4, y + 0.38, 2.9, 0.5, who, SMALL_PT, INK, name=f"Autor {year}")
-    fig_x = 4.4
-    _, (_, fy, _, fh) = add_picture_fit(
-        slide, ctx.fig_dir / "s08_noise.png", fig_x, 1.75, SLIDE_W - MARGIN - fig_x, 3.7,
+        add_text(slide, 1.35, y - 0.18, 1.8, 0.55, year, 32, INK, bold=True, name=f"Año {year}")
+        add_text(slide, 1.35, y + 0.38, 1.9, 0.9, who, SMALL_PT, INK, name=f"Autor {year}")
+    fig_x = 3.3
+    _, (_, fy, fw, fh) = add_picture_fit(
+        slide, ctx.fig_dir / "s08_noise.png", fig_x, 1.7, SLIDE_W - MARGIN - fig_x, 9.0,
         "Relajación hacia x* = 1 sin ruido (izquierda) y con ruido σ = 0,05 (derecha).",
     )  # fmt: skip
-    y = fy + fh + 0.3
-    add_text(slide, fig_x, y, 4.6, 0.75, "dx = f dt + σ dW", 36, INK, name="Fórmula")
+    y = fy + fh + 0.2
+    add_text(slide, fig_x, y, 4.6, 0.7, "dx = f dt + σ dW", 36, INK, name="Fórmula")
     add_text(
-        slide, fig_x + 4.8, y + 0.12, 2.9, 0.6, "determinista + ruido", SMALL_PT, MUTED,
-        name="Lectura",
+        slide, fig_x + fw - 3.6, y + 0.1, 3.6, 0.5, "determinista + ruido", SMALL_PT, MUTED,
+        align=PP_ALIGN.RIGHT, name="Lectura",
     )  # fmt: skip
     return slide
 
@@ -746,30 +770,35 @@ def slide_09_a2(prs: PresentationType, ctx: Context) -> Slide:
     slide, _ = video_slide(
         prs, ctx, 9, "Con ruido, la bola tiembla más al final", "a2_noisy_ball",
         "Animación: la bola con ruido fluctúa más y más lento a medida que el valle se aplana.",
-        video_h=video_h, y=1.5,
+        video_h=video_h, y=1.45,
     )  # fmt: skip
     add_text(
-        slide, MARGIN, 1.5 + video_h + 0.12, CONTENT_W, 0.4,
+        slide, MARGIN, 1.45 + video_h + 0.12, CONTENT_W, 0.45,
         f"Corrida ilustrativa: σ = {fmt_es(A2_SIGMA)}, rampa más rápida que en el experimento",
-        20, MUTED, align=PP_ALIGN.CENTER, name="Nota de la animación",
+        SMALL_PT, MUTED, align=PP_ALIGN.CENTER, name="Nota de la animación",
     )  # fmt: skip
     return slide
 
 
 def slide_10_signal(prs: PresentationType, ctx: Context) -> Slide:
-    """Build the signal slide: variance and AR(1) with two formulas under the figure."""
+    """Build the signal slide: variance and AR(1), each formula under its own panel."""
 
     def below(slide: Slide, y: float) -> None:
-        add_text(slide, MARGIN, y, 5.6, 0.7, "Var = σ² / (2|λ|)", 30, INK, name="Fórmula varianza")
-        add_text(
-            slide, 6.9, y, 5.6, 0.7, "ρ(Δt) = e^{λΔt}", 30, INK, name="Fórmula autocorrelación"
-        )
+        for frac, formula, name in (
+            (PANEL_CENTRES[0], "Var = σ² / (2|λ|)", "Fórmula varianza"),
+            (PANEL_CENTRES[1], "ρ(Δt) = e^{λΔt}", "Fórmula autocorrelación"),
+        ):
+            box_w = 3.6
+            add_text(
+                slide, FIG_X + frac * FIG_W - box_w / 2, y, box_w, 0.65, formula, FORMULA_PT,
+                INK, align=PP_ALIGN.CENTER, name=name,
+            )  # fmt: skip
 
     return figure_slide(
         prs, 10, "Cerca del borde, todo se vuelve más lento", ctx.fig_dir / "s10_signal.png",
-        "Valle empinado frente a valle plano: series, distribuciones y autocorrelación; el valle "
-        "plano fluctúa más y recuerda más tiempo.",
-        reserve=0.95, below=below,
+        "Valle empinado (negro) frente a valle plano (azul): series, distribuciones y "
+        "autocorrelación; el valle plano fluctúa más y recuerda más tiempo.",
+        below=below,
     )  # fmt: skip
 
 
@@ -785,13 +814,12 @@ def slide_11_experiment(prs: PresentationType, ctx: Context) -> Slide:
 
     def below(slide: Slide, y: float) -> None:
         add_text(
-            slide, MARGIN, y, CONTENT_W, 0.5,
-            f"{n} rampas vs {n} controles · σ = {sigma}", BODY_PT, INK, name="Lectura 1",
+            slide, FIG_X, y, FIG_W, 0.42,
+            f"{n} rampas vs {n} controles · σ = {sigma}", SMALL_PT, INK, name="Lectura 1",
         )  # fmt: skip
         add_text(
-            slide, MARGIN, y + 0.55, CONTENT_W, 0.5,
-            f"La rampa típica cae en t = {tip}, unas {advance} unidades antes del pliegue "
-            f"(t = {fold_time}).",
+            slide, FIG_X, y + 0.42, FIG_W, 0.42,
+            f"Cae en t = {tip}, unas {advance} unidades antes del pliegue (t = {fold_time})",
             SMALL_PT, INK, name="Lectura 2",
         )  # fmt: skip
 
@@ -799,37 +827,39 @@ def slide_11_experiment(prs: PresentationType, ctx: Context) -> Slide:
         prs, 11, "El experimento: rampas contra controles", ctx.fig_dir / "s11_experiment.png",
         f"Una rampa de r de 0 a −0,6 cae poco antes del pliegue (t = {fold_time}); el control con "
         "r = 0 permanece estable.",
-        reserve=1.3, below=below,
+        below=below,
     )  # fmt: skip
 
 
 def slide_12_results(prs: PresentationType, ctx: Context) -> Slide:
-    """Results: A3 video plus three stat callouts from key_numbers.json."""
+    """Results: A3 video (>= 9.5 in wide) plus three KPI callouts from key_numbers.json."""
     base = ctx.kn["baseline"]
-    video_h = 4.5
+    video_w = 9.5
+    video_h = video_w / VIDEO_ASPECT
+    video_y = 1.15
     slide, vw = video_slide(
         prs, ctx, 12, "Las señales suben antes de la caída", "a3_rolling_window",
         "Animación: ventana móvil sobre una rampa; la varianza y el AR(1) crecen frente al control "
         "hasta el salto.",
-        video_h=video_h, x=MARGIN, y=1.55,
+        video_h=video_h, x=MARGIN, y=video_y,
     )  # fmt: skip
     add_text(
-        slide, MARGIN, 1.55 + video_h + 0.15, vw, 0.4,
-        f"analizando hasta poco antes del pliegue · semilla {int(base['seed'])}",
-        20, MUTED, name="Nota del análisis",
+        slide, MARGIN, video_y + video_h + 0.05, vw, 0.4,
+        f"Una corrida, semilla {int(base['seed'])}",
+        SMALL_PT, MUTED, name="Nota del análisis",
     )  # fmt: skip
     stats = [
-        (fmt_es(float(base["auc_ar1"]), 3), "AUC AR(1)"),
-        (fmt_es(float(base["auc_var"])), "AUC varianza"),
-        (fmt_es(float(base["tpr_ar1"])), "detección con 5 % de falsas alarmas"),
+        (fmt_es(float(base["auc_ar1"]), 3), "AUC AR(1)", 0.45),
+        (fmt_es(float(base["auc_var"])), "AUC varianza", 0.45),
+        (fmt_es(float(base["tpr_ar1"])), "AR(1): detección con 5\u00a0% de falsas alarmas", 1.6),
     ]
-    x = MARGIN + vw + 0.6
+    x = MARGIN + vw + 0.3
     w = SLIDE_W - MARGIN - x
-    y = 1.55
-    for i, (value, label) in enumerate(stats):
-        add_text(slide, x, y, w, 0.95, value, 56, PALETTE.ramp, bold=True, name=f"Cifra {i + 1}")
-        add_text(slide, x, y + 0.95, w, 0.8, label, 22, INK, name=f"Etiqueta {i + 1}")
-        y += 1.8
+    y = 1.3
+    for i, (value, label, label_h) in enumerate(stats):
+        add_text(slide, x, y, w, 0.75, value, 44, INK, bold=True, name=f"Cifra {i + 1}")
+        add_text(slide, x, y + 0.75, w, label_h, label, SMALL_PT, INK, name=f"Etiqueta {i + 1}")
+        y += 0.75 + label_h + 0.3
     return slide
 
 
@@ -838,7 +868,7 @@ def slide_13_control(prs: PresentationType, ctx: Context) -> Slide:
 
     def below(slide: Slide, y: float) -> None:
         add_text(
-            slide, MARGIN, y, CONTENT_W, 0.6,
+            slide, FIG_X, y, FIG_W, 0.6,
             "El azar también crea tendencias: el control fija el umbral.", BODY_PT, INK,
             name="Lectura",
         )  # fmt: skip
@@ -846,8 +876,8 @@ def slide_13_control(prs: PresentationType, ctx: Context) -> Slide:
     return figure_slide(
         prs, 13, "Sin control, cualquier tendencia parece señal", ctx.fig_dir / "s13_control.png",
         "Histogramas del τ de Kendall del AR(1): control (verde) y rampa (violeta) con el umbral "
-        "del 5 % de falsos positivos.",
-        reserve=0.8, below=below,
+        "del 5 % de falsas alarmas.",
+        below=below,
     )  # fmt: skip
 
 
@@ -864,22 +894,20 @@ def slide_14_heatmap(prs: PresentationType, ctx: Context) -> Slide:
     long_ = fmt_es(cell_long["auc_ar1_mean"], 3)
     seeds = int(cell_long["n_seeds"])
     seeds_text = {2: "dos", 3: "tres", 4: "cuatro", 5: "cinco"}.get(seeds, str(seeds))
-
-    first = (
-        f"σ = {fmt_es(sigma_mid)}: AUC del AR(1) de {short} (rampa corta) a {long_} "
-        f"(larga; media de {seeds_text} semillas)"
+    first = f"σ = {fmt_es(sigma_mid)}: AR(1) de {short} (rampa corta) a {long_} (larga)"
+    second = (
+        f"Medias de {seeds_text} semillas · con σ = {fmt_es(sigma_hi)} hasta el control cae solo."
     )
-    second = f"Con σ = {fmt_es(sigma_hi)} hasta el control cae solo."
 
     def below(slide: Slide, y: float) -> None:
-        add_text(slide, MARGIN, y, CONTENT_W, 0.45, first, 22, INK, name="Lectura 1")
-        add_text(slide, MARGIN, y + 0.5, CONTENT_W, 0.45, second, 22, INK, name="Lectura 2")
+        add_text(slide, FIG_X, y, FIG_W, 0.42, first, SMALL_PT, INK, name="Lectura 1")
+        add_text(slide, FIG_X, y + 0.42, FIG_W, 0.42, second, SMALL_PT, INK, name="Lectura 2")
 
     return figure_slide(
         prs, 14, "Rampas cortas y mucho ruido: señal perdida", ctx.fig_dir / "s14_heatmap.png",
         "Mapas de calor del AUC para AR(1) y varianza según ruido y duración de la rampa; "
         "las celdas rayadas indican que el control también cae solo.",
-        reserve=1.3, below=below,
+        below=below,
     )  # fmt: skip
 
 
@@ -896,31 +924,28 @@ def _qr_png(url: str) -> io.BytesIO:
     return buffer
 
 
-def _repo_block(slide: Slide, repo_url: str | None) -> None:
-    """Right-hand block of the last slide: URL plus QR, or a plain sentence without a URL."""
-    if repo_url is None:
-        add_text(
-            slide, 8.6, 1.85, 4.03, 1.9,
-            ["Código y simulaciones:", "repositorio", REPO_NAME],
-            BODY_PT, INK, name="Repositorio",
-        )  # fmt: skip
-        return
+def _repo_block(slide: Slide, repo_url: str, top: float) -> None:
+    """Right-hand block of the last slide: QR code and URL, top-aligned with the left block."""
     side = 2.9
-    pic = slide.shapes.add_picture(_qr_png(repo_url), inch(9.15), inch(1.8), inch(side), inch(side))
+    pic = slide.shapes.add_picture(
+        _qr_png(repo_url), inch(SLIDE_W - MARGIN - side), inch(top), inch(side), inch(side)
+    )
     pic.name = "Código QR del repositorio"
     set_alt(pic, f"Código QR que lleva al repositorio {repo_url}")
     shown = re.sub(r"^https?://", "", repo_url).rstrip("/")
     add_text(
-        slide, 8.4, 1.8 + side + 0.15, 4.23, 0.7, shown, 18, INK,
-        align=PP_ALIGN.CENTER, name="URL del repositorio",
+        slide, SLIDE_W - MARGIN - 4.7, top + side + 0.1, 4.7, 0.85, shown, SMALL_PT, INK,
+        align=PP_ALIGN.RIGHT, name="URL del repositorio",
     )  # fmt: skip
 
 
 def slide_15_takeaways(prs: PresentationType, ctx: Context) -> Slide:
-    """Takeaways, honest limitation, repository link and questions."""
+    """Takeaways, honest limitation, questions and (with a URL) the repository QR."""
     slide = new_slide(prs, "Avisan, pero no dicen cuándo", 15)
+    top = 1.8
+    text_w = CONTENT_W if ctx.repo_url is None else 7.7
     add_text(
-        slide, MARGIN, 1.8, 7.3, 3.1,
+        slide, MARGIN, top, text_w, 3.0,
         [
             "Varianza y AR(1) suben antes de la caída (si se mira lo bastante).",
             "Avisan que el borde se acerca, no cuándo.",
@@ -929,12 +954,12 @@ def slide_15_takeaways(prs: PresentationType, ctx: Context) -> Slide:
         BODY_PT, INK, space_after=18, name="Mensajes",
     )  # fmt: skip
     add_text(
-        slide, MARGIN, 4.95, 7.3, 0.7,
-        "**Límite:** modelo de juguete, sin datos reales.", SMALL_PT, INK, italic=True,
-        name="Límite",
+        slide, MARGIN, 4.85, text_w, 0.5,
+        "**Límite:** modelo de juguete, sin datos reales.", SMALL_PT, INK, name="Límite",
     )  # fmt: skip
-    add_text(slide, MARGIN, 5.95, 5.0, 0.7, "¿Preguntas?", 32, INK, bold=True, name="Preguntas")
-    _repo_block(slide, ctx.repo_url)
+    add_text(slide, MARGIN, 5.75, 6.0, 0.9, "¿Preguntas?", 44, INK, bold=True, name="Preguntas")
+    if ctx.repo_url is not None:
+        _repo_block(slide, ctx.repo_url, top)
     return slide
 
 
@@ -946,13 +971,13 @@ def backup_01_ou(prs: PresentationType, ctx: Context, number: int) -> Slide:
         slide,
         [
             ("Ecuación", "dx = f(x, r) dt + σ dW"),
-            ("Cerca del equilibrio", "x = x* + δ,   f ≈ λδ,   λ = f′(x*) = 1 − 3x*²"),
+            ("Cerca del equilibrio", "x = x* + δ,   f ≈ λδ,   λ = 1 − 3x*²"),
             ("Linealización (OU)", "dδ = λδ dt + σ dW,   θ = |λ|"),
             ("Varianza estacionaria", "Var = σ² / (2|λ|)"),
-            ("Autocorrelación", "ρ(Δt) = e^{λΔt},   AR(1): φ = e^{λΔt}"),
+            ("Autocorrelación", "ρ(Δt) = e^{λΔt},   φ = e^{λΔt}"),
             ("Cerca del borde", "λ → 0:   Var → ∞,   φ → 1"),
         ],
-        y0=1.65, size=28, pitch=0.9, label_w=3.4,
+        y0=1.6, pitch=0.88, label_w=3.4,
     )  # fmt: skip
     return slide
 
@@ -960,25 +985,29 @@ def backup_01_ou(prs: PresentationType, ctx: Context, number: int) -> Slide:
 def backup_02_cardano(prs: PresentationType, ctx: Context, number: int) -> Slide:
     """Cardano, discriminant and the trigonometric form."""
     slide = new_slide(prs, "Respaldo · Cardano y raíces complejas", number)
-    y = formula_rows(
+    formula_rows(
         slide,
         [
             ("Equilibrios", "x³ − x − r = 0"),
             ("Discriminante", "Δ = 4 − 27r² > 0  ⇔  |r| < r_{c} = 2/(3√3)"),
-            ("Tres raíces reales", "Cardano pasa por complejos (casus irreducibilis)"),
-            ("Forma trigonométrica", "x_{k} = (2/√3) cos[ (1/3) arccos( (3√3/2) r ) − 2πk/3 ]"),
-            ("Una raíz real", "|r| ≥ r_{c}: Cardano con raíces cúbicas reales"),
+            ("Tres raíces reales", "Cardano pasa por complejos (casus irreducibilis)", SMALL_PT),
         ],
-        y0=1.6, size=26, pitch=0.76, label_w=3.0,
+        y0=1.55, pitch=0.8, label_w=3.0,
+    )  # fmt: skip
+    add_text(slide, MARGIN, 3.95, 5.0, 0.45, "Forma trigonométrica", SMALL_PT, MUTED)
+    add_text(
+        slide, MARGIN, 4.4, CONTENT_W, 0.65,
+        "x_{k} = (2/√3) cos[ (1/3) arccos( (3√3/2) r ) − 2πk/3 ]", FORMULA_PT, INK,
+        name="Forma trigonométrica",
     )  # fmt: skip
     note = add_shape(
-        slide, MSO_SHAPE.ROUNDED_RECTANGLE, MARGIN, y + 0.15, CONTENT_W, 1.0, fill=GRID,
+        slide, MSO_SHAPE.ROUNDED_RECTANGLE, MARGIN, 5.45, CONTENT_W, 1.3, fill=GRID,
         name="Nota x³ + x + r",
     )  # fmt: skip
     note.adjustments[0] = 0.12
     shape_text(
-        note, "En cambio x³ + x + r = 0 tiene una sola raíz real (Δ = −4 − 27r² < 0): no hay "
-        "bifurcación.", SMALL_PT, INK, align=PP_ALIGN.LEFT, margin=0.3,
+        note, "|r| ≥ r_{c}: una sola raíz real. Con x³ + x + r = 0, Δ < 0 siempre: "
+        "no hay bifurcación.", SMALL_PT, INK, align=PP_ALIGN.LEFT, margin=0.3,
     )  # fmt: skip
     return slide
 
@@ -1003,21 +1032,20 @@ def backup_04_limits(prs: PresentationType, ctx: Context, number: int) -> Slide:
     """Sweep details and honest limits."""
     slide = new_slide(prs, "Respaldo · Detalles del barrido y límites", number)
     _, (_, fy, fw, _) = add_picture_fit(
-        slide, ctx.fig_dir / "b04_tipped.png", MARGIN, 2.0, 7.7, 4.6,
+        slide, ctx.fig_dir / "b04_tipped.png", MARGIN, 1.9, 8.2, 9.0,
         "Mapas de la fracción de corridas que caen solas: control (izquierda) y rampa antes de "
         "tiempo (derecha), según ruido y duración.",
     )  # fmt: skip
-    x = MARGIN + fw + 0.4
+    x = MARGIN + fw + 0.35
     sigma_hi = fmt_es(sweep_axis(ctx.kn, "sigma")[-1])
     add_text(
         slide, x, fy, SLIDE_W - MARGIN - x, 4.6,
         [
-            "La ventana depende de la duración de la rampa.",
-            f"Con σ = {sigma_hi} el control cae solo.",
-            "Con ruido alto las rampas caen por ruido, antes del pliegue: el AUC ya no mide "
-            "la bifurcación.",
+            "La ventana depende de la duración.",
+            f"σ = {sigma_hi}: el control cae solo.",
+            "Ruido alto: las rampas caen por ruido antes del pliegue.",
         ],
-        22, INK, space_after=16, name="Límites",
+        SMALL_PT, INK, space_after=18, name="Límites",
     )  # fmt: skip
     return slide
 
@@ -1040,24 +1068,22 @@ def backup_06_noise(prs: PresentationType, ctx: Context, number: int) -> Slide:
     fold_var, fold_ar1 = fmt_es(fold["variance"]["auc"], 3), fmt_es(fold["ar1"]["auc"], 3)
     noise_var, noise_ar1 = fmt_es(noise["variance"]["auc"], 3), fmt_es(noise["ar1"]["auc"], 3)
     caption = (
-        f"AUC con el pliegue: varianza {fold_var}, AR(1) {fold_ar1}. "
-        f"AUC con ruido creciente y r = 0: varianza {noise_var}, AR(1) {noise_ar1} "
+        f"Con el pliegue, AUC: varianza {fold_var}, AR(1) {fold_ar1}. "
+        f"Con ruido creciente y r\u00a0=\u00a00: varianza {noise_var}, AR(1) {noise_ar1} "
         "(tres semillas juntas)."
     )
 
     def below(slide: Slide, y: float) -> None:
-        add_text(slide, MARGIN, y, CONTENT_W, 0.8, caption, 20, MUTED, name="Cifras")
+        add_text(slide, FIG_X, y, FIG_W, 0.85, caption, SMALL_PT, INK, name="Cifras")
 
     return figure_slide(
         prs,
         number,
-        "Respaldo · El AR(1) no se deja engañar por ruido creciente (en este modelo)",
+        "Respaldo · AR(1) y ruido creciente",
         ctx.fig_dir / "b05_noise_confound.png",
         f"Con r fijo y ruido creciente la varianza sube (AUC {noise_var}) pero el AR(1) no "
         f"({noise_ar1}); al acercarse a la bifurcación suben ambos.",
-        reserve=0.9,
         below=below,
-        title_size=30,
     )
 
 
