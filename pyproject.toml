@@ -31,7 +31,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-deck = ["python-pptx>=1.0", "pillow>=10"]
+deck = [
+    "python-pptx>=1.0",
+    "pillow>=10",
+    "segno>=1.6.6",
+]
 
 [project.scripts]
 tipping = "tipping.cli:app"

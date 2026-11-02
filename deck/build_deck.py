@@ -1,11 +1,14 @@
 """Build the Spanish talk deck (python-pptx) and export it to PDF with LibreOffice.
 
-Run with ``uv run python deck/build_deck.py``. Outputs go to ``deck/build/``:
-``tipping_puntos_de_quiebre.pptx`` and, when LibreOffice is installed, the same name as PDF.
+Run with ``uv run python deck/build_deck.py [--repo-url URL] [--qa-all]`` (or
+``uv run tipping deck``). Outputs go to ``deck/build/``: ``tipping_puntos_de_quiebre.pptx``
+and, when LibreOffice is installed, the same name as PDF.
 
 Inputs: figures in ``results/figures/es/``, animations in ``results/animations/es/``,
-numbers from ``results/key_numbers.json`` (never typed by hand) and, if present, speaker
-notes from ``deck/notes.json`` (``{"1": "...", ..., "B1": "..."}``).
+numbers from ``results/key_numbers.json`` and ``results/confound.json`` (never typed by
+hand) and, if present, speaker notes from ``deck/notes.json`` (``{"1": "...", ...}``).
+The repository link of the last slide comes from ``--repo-url`` or ``TIPPING_REPO_URL``;
+with it the slide shows the URL and a QR code (``segno``), without it a plain sentence.
 
 Videos are embedded with a poster frame. PowerPoint plays them on click (no autoplay
 XML is injected); LibreOffice and PDF exports only show the poster.
@@ -14,15 +17,18 @@ XML is injected); LibreOffice and PDF exports only show the poster.
 # ruff: noqa: RUF001, RUF002  (Unicode math symbols in slide text are intentional)
 from __future__ import annotations
 
+import argparse
 import datetime as dt
+import io
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
-import sys
 import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -70,13 +76,26 @@ MUTED = PALETTE.muted
 BG = PALETTE.background
 GRID = PALETTE.grid
 
-ROOT = project_root()
-DECK_DIR = ROOT / "deck"
-BUILD_DIR = DECK_DIR / "build"
-FIG_DIR = results_dir() / "figures" / "es"
-ANIM_DIR = results_dir() / "animations" / "es"
-NOTES_PATH = DECK_DIR / "notes.json"
-KEY_NUMBERS_PATH = results_dir() / "key_numbers.json"
+REPO_URL_ENV = "TIPPING_REPO_URL"
+REPO_NAME = "tipping-early-warning"
+WINDOWS_SOFFICE = (
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+)
+
+
+@dataclass(frozen=True)
+class Context:
+    """Resolved inputs and options of one build (paths are resolved at run time)."""
+
+    fig_dir: Path
+    anim_dir: Path
+    build_dir: Path
+    notes_path: Path
+    kn: dict[str, Any]
+    confound: dict[str, Any] | None
+    repo_url: str | None
+
 
 _MARKUP = re.compile(r"(\*\*[^*]+\*\*|\^\{[^}]*\}|_\{[^}]*\})")
 
@@ -104,10 +123,41 @@ def fmt_es(value: float, decimals: int = 2) -> str:
     return text.replace(".", ",")
 
 
-def load_key_numbers() -> dict[str, Any]:
+def fmt_int(value: float) -> str:
+    """Format a whole number without a thousands separator (``1283``, ``2000``)."""
+    return str(round(value))
+
+
+def load_key_numbers(path: Path) -> dict[str, Any]:
     """Read ``results/key_numbers.json`` (single source of truth for every number)."""
-    data: dict[str, Any] = json.loads(KEY_NUMBERS_PATH.read_text(encoding="utf-8"))
+    if not path.is_file():
+        msg = f"{path} is missing: run `uv run tipping reproduce` first."
+        raise SystemExit(msg)
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     return data
+
+
+def load_confound(path: Path) -> dict[str, Any] | None:
+    """Read ``results/confound.json``; ``None`` when the experiment has not been run."""
+    if not path.is_file():
+        return None
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return data
+
+
+def make_context(repo_url: str | None) -> Context:
+    """Resolve every input path from the project root (honours ``TIPPING_ROOT``)."""
+    root = project_root()
+    results = results_dir()
+    return Context(
+        fig_dir=results / "figures" / "es",
+        anim_dir=results / "animations" / "es",
+        build_dir=root / "deck" / "build",
+        notes_path=root / "deck" / "notes.json",
+        kn=load_key_numbers(results / "key_numbers.json"),
+        confound=load_confound(results / "confound.json"),
+        repo_url=repo_url,
+    )
 
 
 def sweep_cell(kn: dict[str, Any], sigma: float, duration: float) -> dict[str, Any]:
@@ -124,11 +174,11 @@ def sweep_axis(kn: dict[str, Any], key: str) -> list[float]:
     return sorted({float(row[key]) for row in kn["sweep_summary"]["rows"]})
 
 
-def load_notes() -> dict[str, str]:
+def load_notes(path: Path) -> dict[str, str]:
     """Read optional speaker notes; returns an empty dict when the file is absent."""
-    if not NOTES_PATH.exists():
+    if not path.exists():
         return {}
-    raw = json.loads(NOTES_PATH.read_text(encoding="utf-8"))
+    raw = json.loads(path.read_text(encoding="utf-8"))
     return {str(k): str(v) for k, v in raw.items()}
 
 
@@ -418,13 +468,14 @@ def figure_slide(
     *,
     reserve: float = 0.0,
     below: Callable[[Slide, float], None] | None = None,
+    title_size: float = TITLE_PT,
 ) -> Slide:
     """Title, one big figure and an optional row of text below it.
 
     ``reserve`` is the height (in) kept free under the figure; ``below(slide, y)`` draws
     into that band, with ``y`` the top of the band.
     """
-    slide = new_slide(prs, title, number)
+    slide = new_slide(prs, title, number, title_size=title_size)
     avail = CONTENT_BOTTOM - CONTENT_TOP - reserve
     _, (_, fy, _, fh) = add_picture_fit(slide, image, MARGIN, CONTENT_TOP, CONTENT_W, avail, alt)
     if below is not None:
@@ -434,6 +485,7 @@ def figure_slide(
 
 def video_slide(
     prs: PresentationType,
+    ctx: Context,
     number: int,
     title: str,
     stem: str,
@@ -448,7 +500,13 @@ def video_slide(
     w = video_h * VIDEO_ASPECT
     left = (SLIDE_W - w) / 2 if x is None else x
     add_video(
-        slide, ANIM_DIR / f"{stem}.mp4", ANIM_DIR / f"{stem}_poster.png", left, y, video_h, alt
+        slide,
+        ctx.anim_dir / f"{stem}.mp4",
+        ctx.anim_dir / f"{stem}_poster.png",
+        left,
+        y,
+        video_h,
+        alt,
     )
     return slide, w
 
@@ -475,11 +533,11 @@ def formula_rows(
 
 
 # --------------------------------------------------------------------------- the slides
-def slide_01_hook(prs: PresentationType) -> Slide:
+def slide_01_hook(prs: PresentationType, ctx: Context) -> Slide:
     """Build the hook: an almost empty slide with one tipping trajectory and the speaker line."""
     slide = new_slide(prs, "¿Se puede ver venir un punto de quiebre?", 1, footer=False, title_y=0.5)
     add_picture_fit(
-        slide, FIG_DIR / "s01_hook.png", 3.0, 1.65, SLIDE_W - MARGIN - 3.0, 4.1,
+        slide, ctx.fig_dir / "s01_hook.png", 3.0, 1.65, SLIDE_W - MARGIN - 3.0, 4.1,
         "Trayectoria ruidosa que baja lentamente y cae de golpe a otro valle.",
     )  # fmt: skip
     add_text(slide, MARGIN, 5.95, CONTENT_W, 0.55, "Fernando", 32, INK, bold=True, name="Nombre")
@@ -491,12 +549,12 @@ def slide_01_hook(prs: PresentationType) -> Slide:
     return slide
 
 
-def slide_02_idea(prs: PresentationType) -> Slide:
+def slide_02_idea(prs: PresentationType, ctx: Context) -> Slide:
     """Idea and goal as a three-step visual with native shapes."""
-    slide = new_slide(prs, "Queremos ver la ruptura antes de que ocurra", 2)
+    slide = new_slide(prs, "Ver el punto de quiebre antes de que ocurra", 2)
     steps = [
-        ("1", "Simular un sistema que se rompe", PALETTE.stable_fill, PALETTE.stable),
-        ("2", "Medir señales antes de la ruptura", PALETTE.ramp_fill, PALETTE.ramp),
+        ("1", "Simular un sistema con punto de quiebre", PALETTE.stable_fill, PALETTE.stable),
+        ("2", "Medir señales antes del punto de quiebre", PALETTE.ramp_fill, PALETTE.ramp),
         ("3", "Comprobar si avisan, con control", PALETTE.control_fill, PALETTE.control),
     ]
     box_w, box_h, gap = 3.55, 3.4, (CONTENT_W - 3 * 3.55) / 2
@@ -533,7 +591,7 @@ def _jump_curve(width: float, height: float, n: int = 90) -> list[tuple[float, f
     return points
 
 
-def slide_03_tipping(prs: PresentationType) -> Slide:
+def slide_03_tipping(prs: PresentationType, ctx: Context) -> Slide:
     """Build "what is a tipping point": one sentence, a schematic jump and three example chips."""
     slide = new_slide(prs, "¿Qué es un punto de quiebre?", 3)
     add_text(
@@ -569,7 +627,7 @@ def slide_03_tipping(prs: PresentationType) -> Slide:
     return slide
 
 
-def slide_04_model(prs: PresentationType) -> Slide:
+def slide_04_model(prs: PresentationType, ctx: Context) -> Slide:
     """Model: ball in valleys, deterministic part only."""
 
     def below(slide: Slide, y: float) -> None:
@@ -578,7 +636,7 @@ def slide_04_model(prs: PresentationType) -> Slide:
         _legend_runs(key)
 
     return figure_slide(
-        prs, 4, "Una bola en un paisaje de valles", FIG_DIR / "s04_landscapes.png",
+        prs, 4, "Una bola en un paisaje de valles", ctx.fig_dir / "s04_landscapes.png",
         "Tres paisajes de potencial para r = 0, −0,2 y −0,385: el valle derecho se aplana.",
         reserve=1.0, below=below,
     )  # fmt: skip
@@ -596,7 +654,7 @@ def _legend_runs(box: BaseShape) -> None:
         _style_run(run, SMALL_PT, color, bold=color != INK)
 
 
-def slide_05_bifurcation(prs: PresentationType) -> Slide:
+def slide_05_bifurcation(prs: PresentationType, ctx: Context) -> Slide:
     """Equilibria and stability: bifurcation diagram plus the growth rate formula."""
 
     def below(slide: Slide, y: float) -> None:
@@ -607,17 +665,17 @@ def slide_05_bifurcation(prs: PresentationType) -> Slide:
         )  # fmt: skip
 
     return figure_slide(
-        prs, 5, "Al bajar r, un valle desaparece", FIG_DIR / "s05_bifurcation.png",
+        prs, 5, "Al bajar r, un valle desaparece", ctx.fig_dir / "s05_bifurcation.png",
         "Diagrama de bifurcación: ramas estables (azul) e inestable (coral) con dos bifurcaciones "
         "silla-nodo en r = ±0,385.",
         reserve=0.95, below=below,
     )  # fmt: skip
 
 
-def slide_06_a1(prs: PresentationType) -> Slide:
+def slide_06_a1(prs: PresentationType, ctx: Context) -> Slide:
     """Animation A1: the valley disappears."""
     slide, _ = video_slide(
-        prs, 6, "Así desaparece un valle", "a1_bifurcation",
+        prs, ctx, 6, "Así desaparece un valle", "a1_bifurcation",
         "Animación: el paisaje de potencial pierde su valle derecho mientras r baja; la bola cae "
         "al otro valle en la bifurcación silla-nodo.",
         video_h=5.3,
@@ -625,7 +683,7 @@ def slide_06_a1(prs: PresentationType) -> Slide:
     return slide
 
 
-def slide_07_hysteresis(prs: PresentationType) -> Slide:
+def slide_07_hysteresis(prs: PresentationType, ctx: Context) -> Slide:
     """Hysteresis loop."""
 
     def below(slide: Slide, y: float) -> None:
@@ -635,14 +693,14 @@ def slide_07_hysteresis(prs: PresentationType) -> Slide:
         )  # fmt: skip
 
     return figure_slide(
-        prs, 7, "Ida y vuelta no son el mismo camino", FIG_DIR / "s07_hysteresis.png",
+        prs, 7, "Ida y vuelta no son el mismo camino", ctx.fig_dir / "s07_hysteresis.png",
         "Diagrama con lazo de histéresis: el salto hacia abajo ocurre en r = −0,385 y el salto "
         "hacia arriba en r = +0,385.",
         reserve=0.8, below=below,
     )  # fmt: skip
 
 
-def slide_08_noise(prs: PresentationType) -> Slide:
+def slide_08_noise(prs: PresentationType, ctx: Context) -> Slide:
     """Stochastic physics: three-node timeline (native shapes), figure and formula."""
     slide = new_slide(prs, "El ruido es física desde 1905", 8)
     nodes = [("1905", "Einstein"), ("1908", "Langevin"), ("1930", "Uhlenbeck–Ornstein")]
@@ -668,7 +726,7 @@ def slide_08_noise(prs: PresentationType) -> Slide:
         add_text(slide, 1.4, y + 0.38, 2.9, 0.5, who, SMALL_PT, INK, name=f"Autor {year}")
     fig_x = 4.4
     _, (_, fy, _, fh) = add_picture_fit(
-        slide, FIG_DIR / "s08_noise.png", fig_x, 1.75, SLIDE_W - MARGIN - fig_x, 3.7,
+        slide, ctx.fig_dir / "s08_noise.png", fig_x, 1.75, SLIDE_W - MARGIN - fig_x, 3.7,
         "Relajación hacia x* = 1 sin ruido (izquierda) y con ruido σ = 0,05 (derecha).",
     )  # fmt: skip
     y = fy + fh + 0.3
@@ -680,17 +738,25 @@ def slide_08_noise(prs: PresentationType) -> Slide:
     return slide
 
 
-def slide_09_a2(prs: PresentationType) -> Slide:
-    """Animation A2: the noisy ball."""
+def slide_09_a2(prs: PresentationType, ctx: Context) -> Slide:
+    """Animation A2: the noisy ball, with an honest caption about its parameters."""
+    from tipping.viz.animations import A2_SIGMA  # heavy import, only needed here
+
+    video_h = 4.85
     slide, _ = video_slide(
-        prs, 9, "Con ruido, la bola tiembla más al final", "a2_noisy_ball",
+        prs, ctx, 9, "Con ruido, la bola tiembla más al final", "a2_noisy_ball",
         "Animación: la bola con ruido fluctúa más y más lento a medida que el valle se aplana.",
-        video_h=5.3,
+        video_h=video_h, y=1.5,
+    )  # fmt: skip
+    add_text(
+        slide, MARGIN, 1.5 + video_h + 0.12, CONTENT_W, 0.4,
+        f"Corrida ilustrativa: σ = {fmt_es(A2_SIGMA)}, rampa más rápida que en el experimento",
+        20, MUTED, align=PP_ALIGN.CENTER, name="Nota de la animación",
     )  # fmt: skip
     return slide
 
 
-def slide_10_signal(prs: PresentationType) -> Slide:
+def slide_10_signal(prs: PresentationType, ctx: Context) -> Slide:
     """Build the signal slide: variance and AR(1) with two formulas under the figure."""
 
     def below(slide: Slide, y: float) -> None:
@@ -700,45 +766,62 @@ def slide_10_signal(prs: PresentationType) -> Slide:
         )
 
     return figure_slide(
-        prs, 10, "Cerca del borde, todo se vuelve más lento", FIG_DIR / "s10_signal.png",
+        prs, 10, "Cerca del borde, todo se vuelve más lento", ctx.fig_dir / "s10_signal.png",
         "Valle empinado frente a valle plano: series, distribuciones y autocorrelación; el valle "
         "plano fluctúa más y recuerda más tiempo.",
         reserve=0.95, below=below,
     )  # fmt: skip
 
 
-def slide_11_experiment(prs: PresentationType, kn: dict[str, Any]) -> Slide:
-    """Experiment design: ramp versus control."""
+def slide_11_experiment(prs: PresentationType, ctx: Context) -> Slide:
+    """Experiment design: ramp versus control, and the fold versus the run that tips."""
+    kn = ctx.kn
     base = kn["baseline"]
     n = int(base["n_runs"])
     sigma = fmt_es(float(base["sigma"]))
+    fold_time = fmt_int(float(base["fold_r"]) / float(kn["protocol"]["ramp_rate"]))
+    tip = fmt_int(float(kn["tipping_vs_fold"]["baseline"]["tip_time_median"]))
+    advance = fmt_int(float(kn["tipping_vs_fold"]["baseline"]["median_advance_before_fold"]))
 
     def below(slide: Slide, y: float) -> None:
         add_text(
-            slide, MARGIN, y, CONTENT_W, 0.6,
-            f"{n} rampas vs {n} controles · σ = {sigma}", BODY_PT, INK, name="Lectura",
+            slide, MARGIN, y, CONTENT_W, 0.5,
+            f"{n} rampas vs {n} controles · σ = {sigma}", BODY_PT, INK, name="Lectura 1",
+        )  # fmt: skip
+        add_text(
+            slide, MARGIN, y + 0.55, CONTENT_W, 0.5,
+            f"La rampa típica cae en t = {tip}, unas {advance} unidades antes del pliegue "
+            f"(t = {fold_time}).",
+            SMALL_PT, INK, name="Lectura 2",
         )  # fmt: skip
 
     return figure_slide(
-        prs, 11, "El experimento: rampas contra controles", FIG_DIR / "s11_experiment.png",
-        "Una rampa de r de 0 a −0,6 cae hacia t ≈ 1283; el control con r = 0 permanece estable.",
-        reserve=0.8, below=below,
+        prs, 11, "El experimento: rampas contra controles", ctx.fig_dir / "s11_experiment.png",
+        f"Una rampa de r de 0 a −0,6 cae poco antes del pliegue (t = {fold_time}); el control con "
+        "r = 0 permanece estable.",
+        reserve=1.3, below=below,
     )  # fmt: skip
 
 
-def slide_12_results(prs: PresentationType, kn: dict[str, Any]) -> Slide:
+def slide_12_results(prs: PresentationType, ctx: Context) -> Slide:
     """Results: A3 video plus three stat callouts from key_numbers.json."""
-    base = kn["baseline"]
+    base = ctx.kn["baseline"]
+    video_h = 4.5
     slide, vw = video_slide(
-        prs, 12, "Las señales suben antes de la caída", "a3_rolling_window",
+        prs, ctx, 12, "Las señales suben antes de la caída", "a3_rolling_window",
         "Animación: ventana móvil sobre una rampa; la varianza y el AR(1) crecen frente al control "
         "hasta el salto.",
-        video_h=4.5, x=MARGIN, y=1.75,
+        video_h=video_h, x=MARGIN, y=1.55,
+    )  # fmt: skip
+    add_text(
+        slide, MARGIN, 1.55 + video_h + 0.15, vw, 0.4,
+        f"analizando hasta poco antes del pliegue · semilla {int(base['seed'])}",
+        20, MUTED, name="Nota del análisis",
     )  # fmt: skip
     stats = [
-        (fmt_es(float(base["auc_ar1"])), "AUC del AR(1)"),
-        (fmt_es(float(base["auc_var"])), "AUC de la varianza"),
-        (fmt_es(float(base["tpr_ar1"])), "TPR del AR(1) con 5 % de falsos positivos"),
+        (fmt_es(float(base["auc_ar1"]), 3), "AUC AR(1)"),
+        (fmt_es(float(base["auc_var"])), "AUC varianza"),
+        (fmt_es(float(base["tpr_ar1"])), "detección con 5 % de falsas alarmas"),
     ]
     x = MARGIN + vw + 0.6
     w = SLIDE_W - MARGIN - x
@@ -750,7 +833,7 @@ def slide_12_results(prs: PresentationType, kn: dict[str, Any]) -> Slide:
     return slide
 
 
-def slide_13_control(prs: PresentationType) -> Slide:
+def slide_13_control(prs: PresentationType, ctx: Context) -> Slide:
     """Why a control group."""
 
     def below(slide: Slide, y: float) -> None:
@@ -761,75 +844,102 @@ def slide_13_control(prs: PresentationType) -> Slide:
         )  # fmt: skip
 
     return figure_slide(
-        prs, 13, "Sin control, cualquier tendencia parece señal", FIG_DIR / "s13_control.png",
+        prs, 13, "Sin control, cualquier tendencia parece señal", ctx.fig_dir / "s13_control.png",
         "Histogramas del τ de Kendall del AR(1): control (verde) y rampa (violeta) con el umbral "
         "del 5 % de falsos positivos.",
         reserve=0.8, below=below,
     )  # fmt: skip
 
 
-def slide_14_heatmap(prs: PresentationType, kn: dict[str, Any]) -> Slide:
+def slide_14_heatmap(prs: PresentationType, ctx: Context) -> Slide:
     """When it fails: AUC heatmap with two takeaways derived from the sweep table."""
+    kn = ctx.kn
     sigmas = sweep_axis(kn, "sigma")
     durations = sweep_axis(kn, "duration")
     sigma_mid = sigmas[1]
     sigma_hi = sigmas[-1]
-    short = fmt_es(sweep_cell(kn, sigma_mid, durations[0])["auc_ar1_mean"])
-    long_ = fmt_es(sweep_cell(kn, sigma_mid, durations[-1])["auc_ar1_mean"])
+    cell_short = sweep_cell(kn, sigma_mid, durations[0])
+    cell_long = sweep_cell(kn, sigma_mid, durations[-1])
+    short = fmt_es(cell_short["auc_ar1_mean"])
+    long_ = fmt_es(cell_long["auc_ar1_mean"], 3)
+    seeds = int(cell_long["n_seeds"])
+    seeds_text = {2: "dos", 3: "tres", 4: "cuatro", 5: "cinco"}.get(seeds, str(seeds))
+
+    first = (
+        f"σ = {fmt_es(sigma_mid)}: AUC del AR(1) de {short} (rampa corta) a {long_} "
+        f"(larga; media de {seeds_text} semillas)"
+    )
+    second = f"Con σ = {fmt_es(sigma_hi)} hasta el control cae solo."
 
     def below(slide: Slide, y: float) -> None:
-        add_text(
-            slide, MARGIN, y, CONTENT_W, 0.5,
-            f"A σ = {fmt_es(sigma_mid)}, el AUC del AR(1) pasa de {short} (rampa corta) "
-            f"a {long_} (larga).",
-            SMALL_PT, INK, name="Lectura 1",
-        )  # fmt: skip
-        add_text(
-            slide, MARGIN, y + 0.55, CONTENT_W, 0.5,
-            f"Con σ = {fmt_es(sigma_hi)} hasta el control cae solo.", SMALL_PT, INK,
-            name="Lectura 2",
-        )  # fmt: skip
+        add_text(slide, MARGIN, y, CONTENT_W, 0.45, first, 22, INK, name="Lectura 1")
+        add_text(slide, MARGIN, y + 0.5, CONTENT_W, 0.45, second, 22, INK, name="Lectura 2")
 
     return figure_slide(
-        prs, 14, "Rampas cortas y mucho ruido: señal perdida", FIG_DIR / "s14_heatmap.png",
+        prs, 14, "Rampas cortas y mucho ruido: señal perdida", ctx.fig_dir / "s14_heatmap.png",
         "Mapas de calor del AUC para AR(1) y varianza según ruido y duración de la rampa; "
         "las celdas rayadas indican que el control también cae solo.",
         reserve=1.3, below=below,
     )  # fmt: skip
 
 
-def slide_15_takeaways(prs: PresentationType) -> Slide:
-    """Takeaways, honest limitation, repository placeholder and questions."""
+def _qr_png(url: str) -> io.BytesIO:
+    """Render a QR code of ``url`` as PNG bytes (ink on cream) with ``segno``."""
+    try:
+        import segno
+    except ImportError as exc:
+        msg = "QR codes need segno: install the deck extra with `uv sync --extra deck`."
+        raise SystemExit(msg) from exc
+    buffer = io.BytesIO()
+    segno.make(url, error="m").save(buffer, kind="png", scale=12, border=2, dark=INK, light=BG)
+    buffer.seek(0)
+    return buffer
+
+
+def _repo_block(slide: Slide, repo_url: str | None) -> None:
+    """Right-hand block of the last slide: URL plus QR, or a plain sentence without a URL."""
+    if repo_url is None:
+        add_text(
+            slide, 8.6, 1.85, 4.03, 1.9,
+            ["Código y simulaciones:", "repositorio", REPO_NAME],
+            BODY_PT, INK, name="Repositorio",
+        )  # fmt: skip
+        return
+    side = 2.9
+    pic = slide.shapes.add_picture(_qr_png(repo_url), inch(9.15), inch(1.8), inch(side), inch(side))
+    pic.name = "Código QR del repositorio"
+    set_alt(pic, f"Código QR que lleva al repositorio {repo_url}")
+    shown = re.sub(r"^https?://", "", repo_url).rstrip("/")
+    add_text(
+        slide, 8.4, 1.8 + side + 0.15, 4.23, 0.7, shown, 18, INK,
+        align=PP_ALIGN.CENTER, name="URL del repositorio",
+    )  # fmt: skip
+
+
+def slide_15_takeaways(prs: PresentationType, ctx: Context) -> Slide:
+    """Takeaways, honest limitation, repository link and questions."""
     slide = new_slide(prs, "Avisan, pero no dicen cuándo", 15)
     add_text(
         slide, MARGIN, 1.8, 7.3, 3.1,
         [
-            "Varianza y AR(1) suben antes de la caída.",
+            "Varianza y AR(1) suben antes de la caída (si se mira lo bastante).",
             "Avisan que el borde se acerca, no cuándo.",
             "Rampas cortas o ruido alto: se pierde la señal.",
         ],
         BODY_PT, INK, space_after=18, name="Mensajes",
     )  # fmt: skip
     add_text(
-        slide, MARGIN, 4.75, 7.3, 0.9,
+        slide, MARGIN, 4.95, 7.3, 0.7,
         "**Límite:** modelo de juguete, sin datos reales.", SMALL_PT, INK, italic=True,
         name="Límite",
     )  # fmt: skip
     add_text(slide, MARGIN, 5.95, 5.0, 0.7, "¿Preguntas?", 32, INK, bold=True, name="Preguntas")
-    qr = add_shape(
-        slide, MSO_SHAPE.RECTANGLE, 9.15, 1.8, 3.0, 3.0, fill=None, line=MUTED, line_pt=2,
-        dashed=True, name="Marcador de QR",
-    )  # fmt: skip
-    shape_text(qr, "Repositorio", BODY_PT, INK)
-    add_text(
-        slide, 8.2, 5.0, 4.9, 0.4, "github.com/<usuario>/tipping-early-warning", 16, MUTED,
-        align=PP_ALIGN.CENTER, name="URL del repositorio",
-    )  # fmt: skip
+    _repo_block(slide, ctx.repo_url)
     return slide
 
 
 # --------------------------------------------------------------------------- backups
-def backup_01_ou(prs: PresentationType, number: int) -> Slide:
+def backup_01_ou(prs: PresentationType, ctx: Context, number: int) -> Slide:
     """Linearisation to Ornstein–Uhlenbeck."""
     slide = new_slide(prs, "Respaldo · De la linealización al OU", number)
     formula_rows(
@@ -847,7 +957,7 @@ def backup_01_ou(prs: PresentationType, number: int) -> Slide:
     return slide
 
 
-def backup_02_cardano(prs: PresentationType, number: int) -> Slide:
+def backup_02_cardano(prs: PresentationType, ctx: Context, number: int) -> Slide:
     """Cardano, discriminant and the trigonometric form."""
     slide = new_slide(prs, "Respaldo · Cardano y raíces complejas", number)
     y = formula_rows(
@@ -873,7 +983,7 @@ def backup_02_cardano(prs: PresentationType, number: int) -> Slide:
     return slide
 
 
-def backup_03_stats(prs: PresentationType, number: int) -> Slide:
+def backup_03_stats(prs: PresentationType, ctx: Context, number: int) -> Slide:
     """Kendall tau and AUC in three lines."""
     slide = new_slide(prs, "Respaldo · τ de Kendall y AUC", number)
     add_text(
@@ -889,46 +999,66 @@ def backup_03_stats(prs: PresentationType, number: int) -> Slide:
     return slide
 
 
-def backup_04_limits(prs: PresentationType, number: int) -> Slide:
+def backup_04_limits(prs: PresentationType, ctx: Context, number: int) -> Slide:
     """Sweep details and honest limits."""
     slide = new_slide(prs, "Respaldo · Detalles del barrido y límites", number)
     _, (_, fy, fw, _) = add_picture_fit(
-        slide, FIG_DIR / "b04_tipped.png", MARGIN, 2.0, 7.7, 4.6,
+        slide, ctx.fig_dir / "b04_tipped.png", MARGIN, 2.0, 7.7, 4.6,
         "Mapas de la fracción de corridas que caen solas: control (izquierda) y rampa antes de "
         "tiempo (derecha), según ruido y duración.",
     )  # fmt: skip
     x = MARGIN + fw + 0.4
+    sigma_hi = fmt_es(sweep_axis(ctx.kn, "sigma")[-1])
     add_text(
         slide, x, fy, SLIDE_W - MARGIN - x, 4.6,
         [
             "La ventana depende de la duración de la rampa.",
-            f"Con σ = {fmt_es(sweep_axis(load_key_numbers(), 'sigma')[-1])} el control cae solo.",
-            "Con ruido alto, muchas rampas caen antes del análisis (sesgo de supervivencia).",
+            f"Con σ = {sigma_hi} el control cae solo.",
+            "Con ruido alto las rampas caen por ruido, antes del pliegue: el AUC ya no mide "
+            "la bifurcación.",
         ],
         22, INK, space_after=16, name="Límites",
     )  # fmt: skip
     return slide
 
 
-def backup_05_static(prs: PresentationType, number: int) -> Slide:
+def backup_05_static(prs: PresentationType, ctx: Context, number: int) -> Slide:
     """Build the static results figure (plan B if the A3 video fails)."""
     return figure_slide(
-        prs, number, "Respaldo · Resultados estáticos", FIG_DIR / "s12_results.png",
+        prs, number, "Respaldo · Resultados estáticos", ctx.fig_dir / "s12_results.png",
         "Varianza móvil y AR(1) móvil de las rampas (violeta) frente al control (verde), con "
         "percentiles 10 a 90 %.",
     )  # fmt: skip
 
 
-def backup_06_noise(prs: PresentationType, number: int) -> Slide:
-    """Increasing-noise confound (only built when its figure exists)."""
+def backup_06_noise(prs: PresentationType, ctx: Context, number: int) -> Slide:
+    """Build the increasing-noise confound slide; every number is read from confound.json."""
+    assert ctx.confound is not None
+    scenarios = ctx.confound["scenarios"]
+    fold = scenarios["fold"]["pooled"]
+    noise = scenarios["noise_0.15"]["pooled"]
+    fold_var, fold_ar1 = fmt_es(fold["variance"]["auc"], 3), fmt_es(fold["ar1"]["auc"], 3)
+    noise_var, noise_ar1 = fmt_es(noise["variance"]["auc"], 3), fmt_es(noise["ar1"]["auc"], 3)
+    caption = (
+        f"AUC con el pliegue: varianza {fold_var}, AR(1) {fold_ar1}. "
+        f"AUC con ruido creciente y r = 0: varianza {noise_var}, AR(1) {noise_ar1} "
+        "(tres semillas juntas)."
+    )
+
+    def below(slide: Slide, y: float) -> None:
+        add_text(slide, MARGIN, y, CONTENT_W, 0.8, caption, 20, MUTED, name="Cifras")
+
     return figure_slide(
         prs,
         number,
-        "Respaldo · Solo el AR(1) distingue ruido y borde",
-        FIG_DIR / "b05_noise_confound.png",
-        "Con r fijo y ruido creciente la varianza sube (AUC 1,00) pero el AR(1) no (0,52); "
-        "al acercarse a la bifurcación suben ambos.",
-    )  # fmt: skip
+        "Respaldo · El AR(1) no se deja engañar por ruido creciente (en este modelo)",
+        ctx.fig_dir / "b05_noise_confound.png",
+        f"Con r fijo y ruido creciente la varianza sube (AUC {noise_var}) pero el AR(1) no "
+        f"({noise_ar1}); al acercarse a la bifurcación suben ambos.",
+        reserve=0.9,
+        below=below,
+        title_size=30,
+    )
 
 
 # --------------------------------------------------------------------------- build
@@ -937,9 +1067,20 @@ def hide(slide: Slide) -> None:
     slide._element.set("show", "0")
 
 
+def find_soffice() -> str | None:
+    """Locate LibreOffice: PATH first, then the usual Windows install folders."""
+    found = shutil.which("soffice") or shutil.which("libreoffice")
+    if found is not None:
+        return found
+    for candidate in WINDOWS_SOFFICE:
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
 def export_pdf(pptx_path: Path) -> Path | None:
     """Convert to PDF with LibreOffice if available; returns the PDF path or ``None``."""
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice = find_soffice()
     if soffice is None:
         print("LibreOffice not found: skipping PDF export")
         return None
@@ -956,72 +1097,99 @@ def export_pdf(pptx_path: Path) -> Path | None:
     return pdf if pdf.exists() else None
 
 
-def build_deck(*, reveal_backups: bool = False) -> tuple[Path, list[str]]:
+def final_slide_note(notes: str, repo_url: str | None) -> str:
+    """Append the repository-link step to the speaker notes of the last slide."""
+    if repo_url is None:
+        step = (
+            "[PENDIENTE ANTES DE PRESENTAR: enlace y QR del repositorio. Reconstruir con "
+            "`uv run tipping deck --repo-url URL` (o variable TIPPING_REPO_URL). Mientras tanto "
+            "la diapositiva solo dice que hay un repositorio; no digas que el enlace está en "
+            "pantalla.]"
+        )
+    else:
+        step = f"[Enlace y código QR en pantalla: {repo_url}]"
+    return f"{notes}\n\n{step}" if notes else step
+
+
+def build_deck(ctx: Context, *, reveal_backups: bool = False) -> tuple[Path, list[str]]:
     """Build the deck; returns the PPTX path and the notes keys actually used.
 
     ``reveal_backups`` leaves the backup slides visible and writes ``*_qa.pptx`` instead,
     so a PDF export shows every slide for visual checks.
     """
-    kn = load_key_numbers()
-    notes = load_notes()
+    notes = load_notes(ctx.notes_path)
     prs = new_presentation()
     keyed: list[tuple[str, Slide]] = []
 
-    main: list[tuple[str, Callable[[], Slide]]] = [
-        ("1", lambda: slide_01_hook(prs)),
-        ("2", lambda: slide_02_idea(prs)),
-        ("3", lambda: slide_03_tipping(prs)),
-        ("4", lambda: slide_04_model(prs)),
-        ("5", lambda: slide_05_bifurcation(prs)),
-        ("6", lambda: slide_06_a1(prs)),
-        ("7", lambda: slide_07_hysteresis(prs)),
-        ("8", lambda: slide_08_noise(prs)),
-        ("9", lambda: slide_09_a2(prs)),
-        ("10", lambda: slide_10_signal(prs)),
-        ("11", lambda: slide_11_experiment(prs, kn)),
-        ("12", lambda: slide_12_results(prs, kn)),
-        ("13", lambda: slide_13_control(prs)),
-        ("14", lambda: slide_14_heatmap(prs, kn)),
-        ("15", lambda: slide_15_takeaways(prs)),
+    main_slides: list[tuple[str, Callable[[PresentationType, Context], Slide]]] = [
+        ("1", slide_01_hook),
+        ("2", slide_02_idea),
+        ("3", slide_03_tipping),
+        ("4", slide_04_model),
+        ("5", slide_05_bifurcation),
+        ("6", slide_06_a1),
+        ("7", slide_07_hysteresis),
+        ("8", slide_08_noise),
+        ("9", slide_09_a2),
+        ("10", slide_10_signal),
+        ("11", slide_11_experiment),
+        ("12", slide_12_results),
+        ("13", slide_13_control),
+        ("14", slide_14_heatmap),
+        ("15", slide_15_takeaways),
     ]
-    for key, make in main:
-        keyed.append((key, make()))
+    for key, make in main_slides:
+        keyed.append((key, make(prs, ctx)))
 
-    backups: list[tuple[str, Callable[[PresentationType, int], Slide]]] = [
+    backups: list[tuple[str, Callable[[PresentationType, Context, int], Slide]]] = [
         ("B1", backup_01_ou),
         ("B2", backup_02_cardano),
         ("B3", backup_03_stats),
         ("B4", backup_04_limits),
         ("B5", backup_05_static),
     ]
-    if (FIG_DIR / "b05_noise_confound.png").exists():
+    if (ctx.fig_dir / "b05_noise_confound.png").exists() and ctx.confound is not None:
         backups.append(("B6", backup_06_noise))
     else:
-        print("b05_noise_confound.png missing: backup B6 skipped")
+        print("b05_noise_confound.png or confound.json missing: backup B6 skipped")
     for key, make_backup in backups:
-        slide = make_backup(prs, len(keyed) + 1)
+        slide = make_backup(prs, ctx, len(keyed) + 1)
         if not reveal_backups:
             hide(slide)
         keyed.append((key, slide))
 
+    notes["15"] = final_slide_note(notes.get("15", ""), ctx.repo_url)
     used: list[str] = []
     for key, slide in keyed:
         if key in notes:
             slide.notes_slide.notes_text_frame.text = notes[key]
             used.append(key)
 
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    out = BUILD_DIR / f"{OUT_NAME}{'_qa' if reveal_backups else ''}.pptx"
+    ctx.build_dir.mkdir(parents=True, exist_ok=True)
+    out = ctx.build_dir / f"{OUT_NAME}{'_qa' if reveal_backups else ''}.pptx"
     prs.save(str(out))
     return out, used
 
 
-def main() -> None:
-    """Build the PPTX and the PDF export and print a short summary.
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse the command line."""
+    parser = argparse.ArgumentParser(description="Build the Spanish talk deck.")
+    parser.add_argument(
+        "--repo-url",
+        default=os.environ.get(REPO_URL_ENV) or None,
+        help=f"repository URL shown (with a QR code) on the last slide; env {REPO_URL_ENV}",
+    )
+    parser.add_argument(
+        "--qa-all", action="store_true", help="leave the backup slides visible (visual checks)"
+    )
+    return parser.parse_args(argv)
 
-    Pass ``--qa-all`` to build the visual-check variant with the backups unhidden.
-    """
-    out, used = build_deck(reveal_backups="--qa-all" in sys.argv[1:])
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Build the PPTX and the PDF export and print a short summary."""
+    args = parse_args(argv)
+    ctx = make_context(args.repo_url)
+    out, used = build_deck(ctx, reveal_backups=args.qa_all)
     print(f"written {out} ({out.stat().st_size / 1e6:.1f} MB); notes for: {', '.join(used) or '-'}")
     pdf = export_pdf(out)
     if pdf is not None:
