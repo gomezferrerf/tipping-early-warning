@@ -99,13 +99,14 @@ def test_deterministic_fall_tracks_valley_then_tips_at_the_fold() -> None:
 
 def test_rolling_window_data_picks_a_run_tipping_near_the_fold() -> None:
     data = anim.rolling_window_data(n_ramp=30, n_control=20)
-    t_fold = anim.A3_RAMP_DURATION * FOLD_R / abs(anim.A3_R_END)
+    sim = anim.baseline_config().sim
+    t_fold = sim.duration * FOLD_R / abs(sim.r_end - sim.r_start)
     tip_t = data.tip_index * data.sample_interval
     assert t_fold <= tip_t < t_fold + 150.0
-    assert data.end_index == data.tip_index - anim.A3_DETREND
+    assert data.end_index == data.tip_index - anim.baseline_config().indicators.detrend_window
     assert np.isnan(data.var_ramp[data.end_index + 1 :]).all()
     # The indicators grow towards the fold; the control median does not.
-    lo, hi = anim.A3_WINDOW, data.end_index
+    lo, hi = anim.baseline_config().indicators.window, data.end_index
     assert data.ar1_ramp[hi] > data.ar1_ramp[lo] + 0.2
     assert data.var_ramp[hi] > 2.0 * data.var_ramp[lo]
     assert abs(data.ar1_ctrl[1, hi] - data.ar1_ctrl[1, lo]) < 0.1

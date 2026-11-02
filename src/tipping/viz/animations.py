@@ -20,10 +20,12 @@ only line data / clip boxes change from frame to frame.
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, ParamSpec, TypeVar
 
 import matplotlib as mpl
 import numpy as np
@@ -38,6 +40,7 @@ from matplotlib.ticker import MaxNLocator
 from matplotlib.transforms import Bbox, TransformedBbox
 from numpy.typing import NDArray
 
+from tipping.config import ExperimentConfig, load_config
 from tipping.indicators import compute_indicators
 from tipping.model import (
     FOLD_R,
@@ -48,9 +51,9 @@ from tipping.model import (
     potential,
     upper_branch,
 )
-from tipping.paths import results_dir
+from tipping.paths import default_config_path, results_dir
 from tipping.simulate import Ramp, Trajectories, derive_seeds, first_crossing, simulate
-from tipping.viz.style import PALETTE, Lang, apply_style, style_axes
+from tipping.viz.style import PALETTE, Lang, style_axes, style_params
 
 FloatArray = NDArray[np.float64]
 
@@ -70,8 +73,12 @@ _TEXT: dict[str, dict[str, str]] = {
     "energy_axis": {"es": "potencial V", "en": "potential V"},
     "time_axis": {"es": "tiempo", "en": "time"},
     "a2_caption": {
-        "es": "Las fluctuaciones crecen y se vuelven más lentas",
+        "es": "Fluctuaciones mayores y más lentas",
         "en": "Fluctuations grow and slow down",
+    },
+    "a2_note": {
+        "es": "corrida ilustrativa \u00b7 \u03c3 = {sigma}",
+        "en": "illustrative run \u00b7 \u03c3 = {sigma}",
     },
     "a3_variance": {"es": "Varianza", "en": "Variance"},
     "a3_ar1": {"es": "AR(1)", "en": "AR(1)"},
@@ -85,6 +92,12 @@ _TEXT: dict[str, dict[str, str]] = {
 def _text(key: str, lang: Lang) -> str:
     """Return the string ``key`` in ``lang``."""
     return _TEXT[key][lang]
+
+
+def _sigma_label(sigma: float, lang: Lang) -> str:
+    """Format ``sigma`` with two decimals (decimal comma in Spanish)."""
+    text = f"{sigma:.2f}"
+    return text.replace(".", ",") if lang == "es" else text
 
 
 def _r_label(r: float) -> str:
@@ -110,30 +123,52 @@ A1_RATE = 0.005  # |dr/dt| of the slow ramp (time units^-1)
 A1_DURATION = 16.0
 
 A2_DURATION = 14.0
-A2_SIGMA = 0.16
+A2_SIGMA = 0.16  # illustrative only: about 3x the baseline noise so the jitter is visible
 A2_SEED = 4
 A2_R_END = -0.34
 A2_SAMPLE_DT = 0.2  # simulated time per video frame
 A2_MIN_X = 0.2  # the realization must stay above this level (does not tip)
 
-A3_SIGMA = 0.05
-A3_RAMP_DURATION = 2000.0
-A3_R_END = -0.6
-A3_N_RAMP = 60
-A3_N_CONTROL = 200
-A3_SEED = 42
-A3_WINDOW = 400
-A3_DETREND = 100
+A3_N_RAMP = 60  # ramp runs to choose the realization from
+A3_N_CONTROL = 200  # control runs behind the median and the 10-90% band
 A3_DURATION = 19.5
 
 _X_LIM = (-1.6, 1.6)
 
 
-def _configure_ffmpeg() -> None:
-    """Point matplotlib at the ffmpeg binary bundled with ``imageio-ffmpeg``."""
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def baseline_config() -> ExperimentConfig:
+    """Load the baseline experiment configuration (``configs/default.yaml``).
+
+    Returns
+    -------
+    tipping.config.ExperimentConfig
+        Source of ``dt``, ``sample_every``, ``sigma``, ``x0``, the ramp and the indicator windows.
+    """
+    return load_config(default_config_path())
+
+
+def _rc_params() -> dict[Any, Any]:
+    """Return the project look plus the bundled ffmpeg path (applied only via ``rc_context``)."""
     import imageio_ffmpeg
 
-    mpl.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
+    params: dict[Any, Any] = dict(style_params())
+    params["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
+    return params
+
+
+def _styled(func: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Run ``func`` inside ``matplotlib.rc_context`` so the process-wide rcParams stay untouched."""
+
+    @functools.wraps(func)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with mpl.rc_context(_rc_params()):
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 def _new_figure(width: int) -> tuple[Figure, float]:
@@ -153,7 +188,6 @@ def _new_figure(width: int) -> tuple[Figure, float]:
     if width % 128 != 0 or width <= 0:
         msg = f"width must be a positive multiple of 128, got {width}"
         raise ValueError(msg)
-    apply_style()
     dpi = width / FIG_W_IN
     fig = Figure(figsize=(FIG_W_IN, FIG_H_IN), dpi=dpi, facecolor=PALETTE.background)
     FigureCanvasAgg(fig)
@@ -189,7 +223,6 @@ def _render(
     dpi : float
         Figure dpi (the poster is exported at twice this resolution).
     """
-    _configure_ffmpeg()
     video_path.parent.mkdir(parents=True, exist_ok=True)
     writer = FFMpegWriter(
         fps=fps,
@@ -311,7 +344,7 @@ def deterministic_fall(
     rate: float = A1_RATE,
     r_start: float = A1_R_START,
     r_end: float = A1_R_END,
-    dt: float = 0.01,
+    dt: float | None = None,
 ) -> FallTrajectory:
     """Integrate ``dx/dt = r(t) + x - x**3`` with ``r(t) = r_start - rate * t`` (RK4).
 
@@ -324,14 +357,15 @@ def deterministic_fall(
         Speed of the ramp, ``-dr/dt`` (small: the ball tracks the valley).
     r_start, r_end : float
         Initial and final control parameter (``r_end < r_start``).
-    dt : float
-        Integration step.
+    dt : float, optional
+        Integration step (default: the baseline ``sim.dt``).
 
     Returns
     -------
     FallTrajectory
         Sampled ``(t, r, x)``.
     """
+    dt = baseline_config().sim.dt if dt is None else dt
     n = round((r_start - r_end) / rate / dt)
     t = np.arange(n + 1, dtype=np.float64) * dt
     r = r_start - rate * t
@@ -365,6 +399,7 @@ def _a1_frames(
     return np.interp(t_f, traj.t, traj.r), np.interp(t_f, traj.t, traj.x)
 
 
+@_styled
 def animate_bifurcation(
     lang: Lang,
     out_dir: Path | None = None,
@@ -506,11 +541,19 @@ def noisy_ball_realization(
     """
     _, n_motion, _ = _frame_counts(duration, fps, 0.0, 0.07)
     ramp = Ramp(0.0, A2_R_END, (n_motion - 1) * A2_SAMPLE_DT)
+    sim = baseline_config().sim
     return simulate(
-        ramp, sigma, 1, dt=0.01, sample_every=round(A2_SAMPLE_DT / 0.01), x0=1.0, seed=seed
+        ramp,
+        sigma,
+        1,
+        dt=sim.dt,
+        sample_every=round(A2_SAMPLE_DT / sim.dt),
+        x0=sim.x0,
+        seed=seed,
     )
 
 
+@_styled
 def animate_noisy_ball(
     lang: Lang,
     out_dir: Path | None = None,
@@ -584,6 +627,14 @@ def animate_noisy_ball(
     fig.text(
         0.5, 0.035, _text("a2_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
     )
+    fig.text(
+        0.012,
+        0.035,
+        _text("a2_note", lang).format(sigma=_sigma_label(A2_SIGMA, lang)),
+        ha="left",
+        fontsize=FONT_BASE,
+        color=PALETTE.muted,
+    )
 
     def update(i: int) -> None:
         k = min(i, len(t) - 1)
@@ -643,28 +694,29 @@ class RollingData:
 
 def rolling_window_data(
     *,
-    seed: int = A3_SEED,
+    seed: int | None = None,
     n_ramp: int = A3_N_RAMP,
     n_control: int = A3_N_CONTROL,
-    duration: float = A3_RAMP_DURATION,
-    window: int = A3_WINDOW,
-    detrend_window: int = A3_DETREND,
+    duration: float | None = None,
+    window: int | None = None,
+    detrend_window: int | None = None,
 ) -> RollingData:
     """Simulate the ramp and control batches and pick the realization for animation A3.
 
     The chosen ramp run is the one that tips earliest among those tipping at or after the fold
-    time ``duration * FOLD_R / 0.6`` (so it tips near the fold, not early). Indicators come from
+    time (so it tips near the fold, not early). Every ``None`` argument defaults to the baseline
+    configuration (:func:`baseline_config`). Indicators come from
     :func:`tipping.indicators.compute_indicators`.
 
     Parameters
     ----------
-    seed : int
+    seed : int, optional
         Master seed (ramp and control get independent derived seeds).
     n_ramp, n_control : int
         Number of ramp runs to choose from and of control runs for the median/band.
-    duration : float
-        Ramp length (``r: 0 -> -0.6``).
-    window, detrend_window : int
+    duration : float, optional
+        Ramp length.
+    window, detrend_window : int, optional
         Rolling-window and detrending lengths in samples.
 
     Returns
@@ -677,12 +729,23 @@ def rolling_window_data(
     RuntimeError
         If no ramp run tips at or after the fold time.
     """
+    cfg = baseline_config()
+    sim = cfg.sim
+    seed = sim.seed if seed is None else seed
+    duration = sim.duration if duration is None else duration
+    window = cfg.indicators.window if window is None else window
+    detrend_window = cfg.indicators.detrend_window if detrend_window is None else detrend_window
+    args = (sim.dt, sim.sample_every, sim.x0)
     seed_ramp, seed_ctrl = derive_seeds(seed)
-    ramp = simulate(Ramp(0.0, A3_R_END, duration), A3_SIGMA, n_ramp, 0.01, 50, 1.0, seed_ramp)
-    ctrl = simulate(Ramp.constant(0.0, duration), A3_SIGMA, n_control, 0.01, 50, 1.0, seed_ctrl)
+    ramp = simulate(
+        Ramp(sim.r_start, sim.r_end, duration), sim.sigma, n_ramp, *args, seed=seed_ramp
+    )
+    ctrl = simulate(
+        Ramp.constant(sim.r_start, duration), sim.sigma, n_control, *args, seed=seed_ctrl
+    )
     dt_s = ramp.sample_interval
     tip = first_crossing(ramp.x)
-    t_fold = duration * FOLD_R / abs(A3_R_END)
+    t_fold = duration * FOLD_R / abs(sim.r_end - sim.r_start)
     tip_t = tip * dt_s
     candidates = np.flatnonzero((tip < ramp.n_samples) & (tip_t >= t_fold))
     if candidates.size == 0:
@@ -751,6 +814,7 @@ def _clip_to_reveal(artists: Sequence[Artist], ax: Axes, box: Bbox) -> None:
         artist.set_clip_box(clip)
 
 
+@_styled
 def animate_rolling_window(
     lang: Lang,
     out_dir: Path | None = None,
