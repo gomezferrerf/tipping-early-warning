@@ -59,6 +59,10 @@ animate:
 deck: key-numbers
     uv run tipping deck
 
+# Rewrite the results block of README.md from results/.
+readme:
+    uv run python scripts/fill_readme.py
+
 # Regenerate everything: sweep, confound, key numbers, figures, animations.
 reproduce:
     uv run tipping reproduce
