@@ -8,6 +8,8 @@ from numpy.typing import NDArray
 
 from tipping.config import ExperimentConfig, IndicatorConfig
 from tipping.evaluate import (
+    analysis_horizon,
+    analysis_stop,
     auc,
     bootstrap_ci,
     bootstrap_mean_ci,
@@ -70,10 +72,21 @@ def test_bootstrap_ci_contains_point_estimate_and_is_seeded(rng: np.random.Gener
     assert 0.0 <= lo < hi <= 1.0
     assert bootstrap_ci(pos, neg, n_boot=400, seed=1) == (lo, hi)
     assert bootstrap_ci(pos, neg, n_boot=400, seed=2) != (lo, hi)
-    # Custom statistic and narrower interval for a larger alpha.
-    lo2, hi2 = bootstrap_ci(pos, neg, statistic=tpr_at_fpr, n_boot=200, alpha=0.5, seed=3)
-    assert lo2 <= hi2
-    assert (hi - lo) > 0.0
+    # A larger alpha gives a strictly narrower interval (the 25-75 percentile range lies inside
+    # the 2.5-97.5 one); a custom statistic is accepted.
+    lo2, hi2 = bootstrap_ci(pos, neg, n_boot=400, alpha=0.5, seed=1)
+    assert lo < lo2 < hi2 < hi
+    t_lo, t_hi = bootstrap_ci(pos, neg, statistic=tpr_at_fpr, n_boot=200, seed=3)
+    assert 0.0 <= t_lo < t_hi <= 1.0
+    assert t_lo <= tpr_at_fpr(pos, neg) <= t_hi
+
+
+def test_bootstrap_rejects_non_positive_n_boot() -> None:
+    values = np.arange(10.0)
+    with pytest.raises(ValueError, match="n_boot"):
+        bootstrap_ci(values + 1, values, n_boot=0)
+    with pytest.raises(ValueError, match="n_boot"):
+        bootstrap_mean_ci(values, n_boot=0)
 
 
 def test_bootstrap_ci_degenerate_separable() -> None:
@@ -128,6 +141,13 @@ def test_evaluate_pair_tipping_truncation_and_validity_rules() -> None:
     taus = run_taus(ramp.x, cfg)
     assert np.isnan(taus.tau_var[2])
     np.testing.assert_array_equal(taus.tip_index, [n, 300, 120, 700])
+
+
+def test_analysis_stop_is_the_earlier_of_horizon_and_tip_minus_margin() -> None:
+    cfg = IndicatorConfig(window=100, detrend_window=25, analysis_fraction=0.6)
+    tip = np.array([1000, 700, 600, 300, 10], dtype=np.intp)  # 1000 means "never tipped"
+    assert analysis_horizon(1000, cfg) == 600
+    np.testing.assert_array_equal(analysis_stop(tip, 1000, cfg), [600, 600, 575, 275, -15])
 
 
 def test_evaluate_pair_min_points_boundary() -> None:

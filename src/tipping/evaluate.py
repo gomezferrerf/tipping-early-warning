@@ -17,7 +17,7 @@ from numpy.typing import NDArray
 from scipy import stats
 
 from tipping.config import IndicatorConfig, SimConfig
-from tipping.indicators import compute_indicators, kendall_tau_per_run
+from tipping.indicators import Indicators, compute_indicators, kendall_tau_per_run
 from tipping.simulate import Ramp, Trajectories, derive_seeds, first_crossing, simulate
 
 FloatArray = NDArray[np.float64]
@@ -27,6 +27,12 @@ Statistic = Callable[[FloatArray, FloatArray], float]
 
 def _finite(values: FloatArray) -> FloatArray:
     return np.asarray(values, dtype=np.float64)[np.isfinite(values)]
+
+
+def _check_n_boot(n_boot: int) -> None:
+    if n_boot < 1:
+        msg = f"n_boot must be >= 1, got {n_boot!r}"
+        raise ValueError(msg)
 
 
 def auc(pos: FloatArray, neg: FloatArray) -> float:
@@ -126,7 +132,13 @@ def bootstrap_ci(
     -------
     tuple of float
         Lower and upper confidence limits.
+
+    Raises
+    ------
+    ValueError
+        If ``n_boot < 1`` or either group has no finite score.
     """
+    _check_n_boot(n_boot)
     p, n = _finite(pos), _finite(neg)
     if p.size == 0 or n.size == 0:
         msg = "both groups need at least one finite score"
@@ -159,7 +171,13 @@ def bootstrap_mean_ci(
     -------
     tuple of float
         Lower and upper confidence limits of the mean.
+
+    Raises
+    ------
+    ValueError
+        If ``n_boot < 1`` or ``values`` has no finite entry.
     """
+    _check_n_boot(n_boot)
     v = _finite(values)
     if v.size == 0:
         msg = "values must contain at least one finite entry"
@@ -187,10 +205,79 @@ class RunTaus(NamedTuple):
     tip_index: IntArray
 
 
+def analysis_horizon(n_samples: int, cfg: IndicatorConfig) -> int:
+    """Exclusive end index of the analysed part of a trajectory: ``round(fraction * n_samples)``.
+
+    Parameters
+    ----------
+    n_samples : int
+        Samples per run.
+    cfg : IndicatorConfig
+        Supplies ``analysis_fraction``.
+
+    Returns
+    -------
+    int
+        Number of leading samples that may enter the analysis.
+    """
+    return round(cfg.analysis_fraction * n_samples)
+
+
+def analysis_stop(tip: IntArray, n_samples: int, cfg: IndicatorConfig) -> IntArray:
+    """Exclusive end index of the analysis of every run.
+
+    The analysis of a run ends at ``min(tip - detrend_window, horizon)``: the horizon is
+    :func:`analysis_horizon` and the margin of ``detrend_window`` samples keeps the centred
+    detrending filter away from the jump. The result may be negative for runs that tip at once.
+
+    Parameters
+    ----------
+    tip : numpy.ndarray
+        First sample index with ``x < tip_threshold`` per run (``n_samples`` if none), as returned
+        by :func:`tipping.simulate.first_crossing`.
+    n_samples : int
+        Samples per run.
+    cfg : IndicatorConfig
+        Supplies ``detrend_window`` and ``analysis_fraction``.
+
+    Returns
+    -------
+    numpy.ndarray
+        Exclusive stop index per run, shape ``(n_runs,)``.
+    """
+    stop: IntArray = np.minimum(tip - cfg.detrend_window, analysis_horizon(n_samples, cfg))
+    return stop
+
+
+def run_taus_with_indicators(x: FloatArray, cfg: IndicatorConfig) -> tuple[RunTaus, Indicators]:
+    """Like :func:`run_taus`, but also return the rolling indicators that were computed.
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        States, shape ``(n_samples, n_runs)``, without NaN.
+    cfg : IndicatorConfig
+        Window, detrending and truncation settings.
+
+    Returns
+    -------
+    tuple
+        ``(RunTaus, Indicators)``; the indicators are those of ``x`` with the configured windows.
+    """
+    n_samples = x.shape[0]
+    tip = first_crossing(x, cfg.tip_threshold)
+    stop = analysis_stop(tip, n_samples, cfg)
+    ind = compute_indicators(x, cfg.window, cfg.detrend_window)
+    step = cfg.resolved_step()
+    tau_var = kendall_tau_per_run(ind.variance, cfg.window, stop, step, cfg.min_points)
+    tau_ar1 = kendall_tau_per_run(ind.ar1, cfg.window, stop, step, cfg.min_points)
+    return RunTaus(tau_var=tau_var, tau_ar1=tau_ar1, tip_index=tip), ind
+
+
 def run_taus(x: FloatArray, cfg: IndicatorConfig) -> RunTaus:
     """Kendall tau of both indicators versus time for every run.
 
-    Per run, the analysis ends (exclusive) at
+    Per run, the analysis ends (exclusive) at :func:`analysis_stop`, i.e.
     ``min(tip_index - detrend_window, round(analysis_fraction * n_samples))``: the margin keeps
     the centred detrending filter away from the jump. The rolling indicators are subsampled
     from index ``window`` every ``cfg.resolved_step()`` samples; runs with fewer than
@@ -199,7 +286,8 @@ def run_taus(x: FloatArray, cfg: IndicatorConfig) -> RunTaus:
     Parameters
     ----------
     x : numpy.ndarray
-        States, shape ``(n_samples, n_runs)``.
+        States, shape ``(n_samples, n_runs)``. Must be free of NaN (the rolling statistics use
+        cumulative sums, so one NaN would contaminate every later window).
     cfg : IndicatorConfig
         Window, detrending and truncation settings.
 
@@ -208,15 +296,7 @@ def run_taus(x: FloatArray, cfg: IndicatorConfig) -> RunTaus:
     RunTaus
         ``(tau_var, tau_ar1, tip_index)``.
     """
-    n_samples = x.shape[0]
-    tip = first_crossing(x, cfg.tip_threshold)
-    horizon = round(cfg.analysis_fraction * n_samples)
-    stop = np.minimum(tip - cfg.detrend_window, horizon)
-    ind = compute_indicators(x, cfg.window, cfg.detrend_window)
-    step = cfg.resolved_step()
-    tau_var = kendall_tau_per_run(ind.variance, cfg.window, stop, step, cfg.min_points)
-    tau_ar1 = kendall_tau_per_run(ind.ar1, cfg.window, stop, step, cfg.min_points)
-    return RunTaus(tau_var=tau_var, tau_ar1=tau_ar1, tip_index=tip)
+    return run_taus_with_indicators(x, cfg)[0]
 
 
 @dataclass(frozen=True, eq=False)
@@ -299,7 +379,7 @@ def evaluate_pair(
         msg = "ramp and null trajectories must have the same number of samples"
         raise ValueError(msg)
     n_samples = ramp_traj.n_samples
-    horizon = round(cfg.analysis_fraction * n_samples)
+    horizon = analysis_horizon(n_samples, cfg)
 
     ramp = run_taus(ramp_traj.x, cfg)
     null = run_taus(null_traj.x, cfg)

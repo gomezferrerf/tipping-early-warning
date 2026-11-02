@@ -14,6 +14,7 @@ from tipping.confound import (
     FRAME_COLUMNS,
     POOLED_SEED,
     Group,
+    _jsonable,
     build_scenarios,
     group_seed,
     group_stats,
@@ -122,6 +123,17 @@ def test_constant_r_group_has_flat_deterministic_schedule() -> None:
     assert traj.sigma_end == 0.10
 
 
+def test_ramp_groups_follow_the_simulation_settings() -> None:
+    """The ramp starts at sim.r_start and the fold group ends at the r_end of the settings."""
+    shifted = SIM.model_copy(update={"r_start": 0.1, "r_end": -0.5})
+    traj = simulate_group(shifted, Group("fold", -0.5, None), 1)
+    assert traj.r[0] == pytest.approx(0.1, abs=1e-2)
+    scenarios = {s.name: s for s in build_scenarios((0.15,), shifted.r_end)}
+    assert scenarios["fold"].pos.r_end == -0.5
+    assert scenarios["mixed_0.15"].pos.r_end == -0.5
+    assert scenarios["noise_0.15"].pos.r_end == 0.0
+
+
 def test_main_writes_parquet_and_json(tmp_path: Path) -> None:
     """main() writes both artefacts with the keys the deck build reads."""
     parquet_path, json_path = main(tmp_path, n_runs=20, seeds=(1,), sigma_ends=(0.15,), n_boot=10)
@@ -137,6 +149,9 @@ def test_main_writes_parquet_and_json(tmp_path: Path) -> None:
 def test_summary_is_json_serialisable(frame: pd.DataFrame) -> None:
     """The summary round-trips through json (NaN replaced by None upstream)."""
     summary = summarise_confound(frame, SIM, IND, 30)
+    restored = json.loads(json.dumps(_jsonable(summary)))
+    assert set(restored["scenarios"]) == set(summary["scenarios"])
+    assert restored["scenarios"]["fold"]["sigma_end"] is None  # NaN: constant noise
     assert summary["scenarios"]["noise_0.15"]["sigma_at_analysis_end"] == pytest.approx(
         0.05 + 0.10 * IND.analysis_fraction
     )

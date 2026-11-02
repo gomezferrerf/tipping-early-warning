@@ -47,7 +47,15 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from tipping.config import IndicatorConfig, SimConfig, load_config
-from tipping.evaluate import RunTaus, auc, bootstrap_ci, run_taus, tpr_at_fpr
+from tipping.evaluate import (
+    RunTaus,
+    analysis_horizon,
+    analysis_stop,
+    auc,
+    bootstrap_ci,
+    run_taus_with_indicators,
+    tpr_at_fpr,
+)
 from tipping.indicators import compute_indicators
 from tipping.io import write_parquet
 from tipping.paths import default_config_path, results_dir
@@ -64,7 +72,10 @@ The Kramers escape rate at ``r = 0`` is about ``exp(-2 dV / sigma**2)`` with bar
 valley (the run counts the tipped fraction to confirm). Larger values would let the noise tip the
 system and turn the experiment into a different one.
 """
-FOLD_R_END = -0.6
+RAMP_R_END = -0.6
+"""Final control parameter of the ramp groups (``fold`` and ``mixed_<s>``), past the fold."""
+FOLD_R_END = RAMP_R_END
+"""Deprecated alias of :data:`RAMP_R_END`, kept until ``viz/figures_extra.py`` is updated."""
 POOLED_SEED = -1
 """Value of the ``seed`` column on the rows that pool all seeds."""
 
@@ -136,13 +147,19 @@ class Scenario:
     null: Group
 
 
-def build_scenarios(sigma_ends: Sequence[float] = DEFAULT_SIGMA_ENDS) -> list[Scenario]:
+def build_scenarios(
+    sigma_ends: Sequence[float] = DEFAULT_SIGMA_ENDS, r_end: float = RAMP_R_END
+) -> list[Scenario]:
     """Build the list of scenarios.
 
     Parameters
     ----------
     sigma_ends : sequence of float, default (0.10, 0.15)
         Final noise amplitudes of the noise-ramp and mixed groups.
+    r_end : float, default :data:`RAMP_R_END`
+        Final control parameter of the ``fold`` and ``mixed_<s>`` groups; :func:`run_confound`
+        passes the ``r_end`` of the simulation settings, so the fold group always matches the
+        baseline experiment.
 
     Returns
     -------
@@ -150,10 +167,10 @@ def build_scenarios(sigma_ends: Sequence[float] = DEFAULT_SIGMA_ENDS) -> list[Sc
         ``fold``, then ``noise_<s>``, ``mixed_<s>`` and ``mixed_vs_noise_<s>`` for each ``s``.
     """
     control = Group("control", 0.0, None)
-    scenarios = [Scenario("fold", Group("fold", FOLD_R_END, None), control)]
+    scenarios = [Scenario("fold", Group("fold", r_end, None), control)]
     for s in sigma_ends:
         noise = Group(f"noise_{s:.2f}", 0.0, float(s))
-        mixed = Group(f"mixed_{s:.2f}", FOLD_R_END, float(s))
+        mixed = Group(f"mixed_{s:.2f}", r_end, float(s))
         scenarios.append(Scenario(noise.name, noise, control))
         scenarios.append(Scenario(mixed.name, mixed, control))
         scenarios.append(Scenario(f"mixed_vs_noise_{s:.2f}", mixed, noise))
@@ -188,9 +205,9 @@ def group_seed(seed: int, group: Group) -> int:
 def simulate_group(sim: SimConfig, group: Group, seed: int) -> Trajectories:
     """Simulate one group with the settings of ``sim``.
 
-    ``r`` is a :class:`~tipping.simulate.Ramp` from 0 to ``group.r_end`` (constant when
-    ``r_end == 0``, which :class:`~tipping.simulate.Ramp` supports directly) and the noise
-    amplitude ramps from ``sim.sigma`` to ``group.sigma_end`` if that is given.
+    ``r`` is a :class:`~tipping.simulate.Ramp` from ``sim.r_start`` to ``group.r_end`` (constant
+    when both are 0, as for the control and noise groups with the default ``r_start = 0``) and
+    the noise amplitude ramps from ``sim.sigma`` to ``group.sigma_end`` if that is given.
 
     Parameters
     ----------
@@ -206,7 +223,7 @@ def simulate_group(sim: SimConfig, group: Group, seed: int) -> Trajectories:
     Trajectories
         Sampled runs of the group.
     """
-    schedule = Ramp(0.0, group.r_end, sim.duration)
+    schedule = Ramp(sim.r_start, group.r_end, sim.duration)
     return simulate(
         schedule,
         sigma=sim.sigma,
@@ -266,12 +283,12 @@ def group_stats(traj: Trajectories, cfg: IndicatorConfig) -> GroupStats:
     GroupStats
         Taus, changes, validity mask and tipped counts.
     """
-    taus: RunTaus = run_taus(traj.x, cfg)
+    taus: RunTaus
+    taus, ind = run_taus_with_indicators(traj.x, cfg)
     n_samples = traj.n_samples
-    horizon = round(cfg.analysis_fraction * n_samples)
-    stop = np.minimum(taus.tip_index - cfg.detrend_window, horizon)
+    horizon = analysis_horizon(n_samples, cfg)
+    stop = analysis_stop(taus.tip_index, n_samples, cfg)
     valid = np.isfinite(taus.tau_var) & np.isfinite(taus.tau_ar1)
-    ind = compute_indicators(traj.x, cfg.window, cfg.detrend_window)
     cols = np.arange(traj.n_runs)
     last = np.clip(stop - 1, 0, n_samples - 1)
     first = min(cfg.window, n_samples - 1)
@@ -434,7 +451,7 @@ def run_confound(
     base_sim, base_ind = default_configs(n_runs)
     sim_cfg = base_sim if sim is None else sim
     ind_cfg = base_ind if indicators is None else indicators
-    scenarios = build_scenarios(sigma_ends)
+    scenarios = build_scenarios(sigma_ends, sim_cfg.r_end)
     groups: dict[str, Group] = {}
     for sc in scenarios:
         groups[sc.pos.name] = sc.pos
@@ -510,9 +527,9 @@ def indicator_traces(sigma_end: float, n_runs: int = 300, seed: int = 1) -> Indi
     t = np.empty(0)
     for group in groups:
         traj = simulate_group(sim, group, seed)
-        horizon = round(cfg.analysis_fraction * traj.n_samples)
+        horizon = analysis_horizon(traj.n_samples, cfg)
         tip = first_crossing(traj.x, cfg.tip_threshold)
-        stop = np.minimum(tip - cfg.detrend_window, horizon)
+        stop = analysis_stop(tip, traj.n_samples, cfg)
         ind = compute_indicators(traj.x, cfg.window, cfg.detrend_window)
         rows = np.arange(traj.n_samples)[:, None]
         keep = rows < stop[None, :]
@@ -627,7 +644,7 @@ def summarise_confound(
             "dt": sim.dt,
             "sample_interval": sim.sample_interval,
             "sigma_start": sim.sigma,
-            "r_start": 0.0,
+            "r_start": sim.r_start,
             "window": indicators.window,
             "detrend_window": indicators.detrend_window,
             "analysis_fraction": indicators.analysis_fraction,
