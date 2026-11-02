@@ -4,6 +4,9 @@ All functions operate on arrays of shape ``(n_samples,)`` or ``(n_samples, n_run
 first axis and are vectorised across runs. The rolling statistics use cumulative sums, so their
 cost does not depend on the window length; they are equivalent (to floating-point accuracy)
 to the naive per-window computation, which the test suite checks.
+
+Inputs must be free of NaN: a single NaN contaminates the cumulative sums and therefore every
+later window of that run. The simulator never produces NaN.
 """
 
 from __future__ import annotations
@@ -89,7 +92,7 @@ def rolling_variance(resid: FloatArray, window: int) -> FloatArray:
     Parameters
     ----------
     resid : numpy.ndarray
-        Series, shape ``(n_samples,)`` or ``(n_samples, n_runs)``.
+        Series, shape ``(n_samples,)`` or ``(n_samples, n_runs)``; must not contain NaN.
     window : int
         Window length in samples (``>= 2``).
 
@@ -122,7 +125,7 @@ def rolling_ar1(resid: FloatArray, window: int) -> FloatArray:
     Parameters
     ----------
     resid : numpy.ndarray
-        Series, shape ``(n_samples,)`` or ``(n_samples, n_runs)``.
+        Series, shape ``(n_samples,)`` or ``(n_samples, n_runs)``; must not contain NaN.
     window : int
         Window length in samples (``>= 3``).
 
@@ -214,7 +217,7 @@ def compute_indicators(x: FloatArray, window: int, detrend_window: int) -> Indic
     Parameters
     ----------
     x : numpy.ndarray
-        Series, shape ``(n_samples,)`` or ``(n_samples, n_runs)``.
+        Series, shape ``(n_samples,)`` or ``(n_samples, n_runs)``; must not contain NaN.
     window : int
         Rolling-window length in samples.
     detrend_window : int

@@ -69,7 +69,6 @@ convention = "numpy"
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
-plugins = ["numpy.typing.mypy_plugin"]
 
 [[tool.mypy.overrides]]
 module = ["scipy.*", "joblib.*", "duckdb.*", "imageio_ffmpeg.*", "pptx.*"]

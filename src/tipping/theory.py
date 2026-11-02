@@ -27,14 +27,14 @@ def _check_stable(rate: float | FloatArray) -> None:
         raise ValueError(msg)
 
 
-def ou_variance(sigma: float, growth_rate: float | FloatArray) -> float | FloatArray:
+def ou_variance(sigma: float, rate: float | FloatArray) -> float | FloatArray:
     """Stationary variance of the linearised process, ``sigma**2 / (2 |lambda|)``.
 
     Parameters
     ----------
     sigma : float
         Noise amplitude.
-    growth_rate : float or numpy.ndarray
+    rate : float or numpy.ndarray
         Linear growth rate ``lambda <= 0`` of the equilibrium.
 
     Returns
@@ -45,19 +45,19 @@ def ou_variance(sigma: float, growth_rate: float | FloatArray) -> float | FloatA
     Raises
     ------
     ValueError
-        If any ``growth_rate`` is positive (unstable equilibrium).
+        If any ``rate`` is positive (unstable equilibrium).
     """
-    _check_stable(growth_rate)
+    _check_stable(rate)
     with np.errstate(divide="ignore"):
-        return sigma**2 / (2.0 * np.abs(growth_rate))
+        return sigma**2 / (2.0 * np.abs(rate))
 
 
-def ou_acf(growth_rate: float | FloatArray, lag: float | FloatArray) -> float | FloatArray:
+def ou_acf(rate: float | FloatArray, lag: float | FloatArray) -> float | FloatArray:
     """Autocorrelation ``exp(lambda * |lag|)`` of the linearised process.
 
     Parameters
     ----------
-    growth_rate : float or numpy.ndarray
+    rate : float or numpy.ndarray
         Linear growth rate ``lambda <= 0``.
     lag : float or numpy.ndarray
         Time lag (its sign is irrelevant).
@@ -70,18 +70,18 @@ def ou_acf(growth_rate: float | FloatArray, lag: float | FloatArray) -> float | 
     Raises
     ------
     ValueError
-        If any ``growth_rate`` is positive.
+        If any ``rate`` is positive.
     """
-    _check_stable(growth_rate)
-    return np.exp(growth_rate * np.abs(lag))
+    _check_stable(rate)
+    return np.exp(rate * np.abs(lag))
 
 
-def ou_ar1(growth_rate: float | FloatArray, dt: float) -> float | FloatArray:
+def ou_ar1(rate: float | FloatArray, dt: float) -> float | FloatArray:
     """Lag-1 autocorrelation ``exp(lambda * dt)`` of the process sampled every ``dt``.
 
     Parameters
     ----------
-    growth_rate : float or numpy.ndarray
+    rate : float or numpy.ndarray
         Linear growth rate ``lambda <= 0``.
     dt : float
         Sampling interval.
@@ -91,7 +91,7 @@ def ou_ar1(growth_rate: float | FloatArray, dt: float) -> float | FloatArray:
     float or numpy.ndarray
         AR(1) coefficient ``phi``.
     """
-    return ou_acf(growth_rate, dt)
+    return ou_acf(rate, dt)
 
 
 def predicted_indicators(r: float, sigma: float, dt: float) -> tuple[float, float]:
