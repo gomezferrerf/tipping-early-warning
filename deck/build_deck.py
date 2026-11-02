@@ -992,7 +992,7 @@ def backup_03_stats(prs: PresentationType, ctx: Context, number: int) -> Slide:
             "**τ de Kendall:** correlación de rangos entre el indicador y el tiempo; "
             "+1 si sube siempre.",
             "**AUC:** probabilidad de que una rampa tenga τ mayor que un control; 0,5 es azar.",
-            "**TPR al 5 % FPR:** umbral = percentil 95 de los τ del control.",
+            "**Detección con 5 % de falsas alarmas:** umbral = percentil 95 de los τ del control.",
         ],
         BODY_PT, INK, space_after=26, name="Definiciones",
     )  # fmt: skip
