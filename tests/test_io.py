@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -83,3 +84,14 @@ def test_query_custom_table_name(tmp_path: Path, frame: pd.DataFrame) -> None:
     path = write_parquet(frame, tmp_path / "t.parquet")
     out = query(path, "SELECT max(n) AS m FROM sweep", table="sweep")
     assert int(out["m"].iloc[0]) == 4
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_written_file_follows_the_umask(tmp_path: Path, frame: pd.DataFrame) -> None:
+    """mkstemp creates 0600 files; the output must get the usual umask-based mode instead."""
+    umask = os.umask(0o022)
+    try:
+        path = write_parquet(frame, tmp_path / "t.parquet")
+    finally:
+        os.umask(umask)
+    assert path.stat().st_mode & 0o777 == 0o644

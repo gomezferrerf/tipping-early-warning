@@ -38,6 +38,10 @@ def write_parquet(df: pd.DataFrame, path: Path | str) -> Path:
     tmp = Path(tmp_name)
     try:
         df.to_parquet(tmp, engine="pyarrow", index=False)
+        if os.name == "posix":  # mkstemp creates the file as 0600; use the umask default instead
+            umask = os.umask(0)
+            os.umask(umask)
+            tmp.chmod(0o666 & ~umask)
         tmp.replace(target)
     except BaseException:
         with contextlib.suppress(OSError):
