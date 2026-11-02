@@ -1,14 +1,19 @@
 """Noise-by-duration sweep of the early-warning experiment.
 
 One *cell* is a triple ``(sigma, duration, seed)``: a full ramp-versus-control experiment
-(:func:`tipping.evaluate.run_experiment`) with the window rule
-``window = max(10, round(0.10 * duration / sample_interval))``,
-``detrend_window = max(5, window // 4)`` (see :meth:`tipping.config.SweepConfig.indicator_config`).
+(:func:`tipping.evaluate.run_experiment`). The rolling window and the detrending window are
+derived from the ramp duration by :meth:`tipping.config.SweepConfig.indicator_config`; the rule
+and its constants (``window_fraction``, ``min_window``) live in ``configs/sweep.yaml``, so a
+longer ramp gets a longer window and window size and ramp duration are not varied separately.
 
 Every cell gets its own master seed, a pure function of ``(sigma, duration, seed)``, so the
 table does not depend on the number of workers, the order of execution or the rest of the grid.
 :func:`run_sweep` writes ``sweep.parquet`` (one row per cell) and ``sweep_summary.parquet``
-(per sigma and duration: mean over seeds with a percentile bootstrap 95% confidence interval).
+(per sigma and duration: mean over seeds with the ``*_ci_lo`` / ``*_ci_hi`` interval).
+
+Note that the interval is a range indicator, not a confidence interval in the usual sense: with
+the default three seeds it is the percentile bootstrap of the mean of three values, which is
+essentially their minimum-maximum range, and it says little about the sampling distribution.
 """
 
 from __future__ import annotations
@@ -16,13 +21,12 @@ from __future__ import annotations
 import itertools
 import os
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import typer
 from joblib import Parallel, delayed
 
 from tipping.config import SweepConfig, load_sweep_config
@@ -48,7 +52,7 @@ SWEEP_COLUMNS: tuple[str, ...] = (
 """Columns of ``sweep.parquet`` in order."""
 
 CI_METRICS: tuple[str, ...] = ("auc_var", "auc_ar1", "tpr_var", "tpr_ar1")
-"""Metrics that get a mean and a bootstrap confidence interval in the summary."""
+"""Metrics that get a mean and a ``_ci_lo`` / ``_ci_hi`` range indicator in the summary."""
 
 MEAN_ONLY_METRICS: tuple[str, ...] = (
     "frac_ramp_tipped_early",
@@ -205,9 +209,11 @@ def summarise(sweep: pd.DataFrame, n_boot: int = 1000) -> pd.DataFrame:
     """Aggregate the per-seed table to one row per ``(sigma, duration)``.
 
     For ``auc_var``, ``auc_ar1``, ``tpr_var`` and ``tpr_ar1`` the mean over seeds is reported
-    together with a percentile bootstrap 95% confidence interval of that mean (resampling
-    seeds; ``nan`` values are ignored, and a metric with no finite value gives ``nan``). The
-    tipped fractions and the valid-run counts are averaged over seeds.
+    together with the percentile bootstrap 95% interval of that mean (resampling seeds;
+    ``nan`` values are ignored, and a metric with no finite value gives ``nan``). With few seeds
+    (the default is three) this interval is essentially the minimum-maximum range of the seed
+    values: read ``*_ci_lo`` / ``*_ci_hi`` as a range indicator, not as a confidence interval.
+    The tipped fractions and the valid-run counts are averaged over seeds.
 
     Parameters
     ----------
@@ -255,10 +261,15 @@ def summarise(sweep: pd.DataFrame, n_boot: int = 1000) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=list(SUMMARY_COLUMNS))
 
 
+def _silent(message: str) -> None:
+    """Discard a progress line."""
+
+
 def run_sweep(
     config_path: Path | None = None,
     out_dir: Path | None = None,
     n_jobs: int | None = None,
+    log: Callable[[str], None] | None = None,
 ) -> Path:
     """Run the noise-by-duration sweep and write the result tables.
 
@@ -275,6 +286,8 @@ def run_sweep(
     n_jobs : int, optional
         Worker processes; defaults to the ``n_jobs`` of the configuration (``-1``: all cores).
         If a process pool cannot be used the sweep falls back to serial execution.
+    log : callable, optional
+        Receives one progress line at a time (e.g. ``print`` or ``typer.echo``); silent if omitted.
 
     Returns
     -------
@@ -286,8 +299,9 @@ def run_sweep(
     cells = build_grid(cfg)
     # Long runs first so that the workers stay balanced; rows are sorted afterwards.
     schedule = sorted(cells, key=lambda c: (-c.duration, c.sigma, c.seed))
+    emit = log if log is not None else _silent
     workers = resolve_n_jobs(cfg.n_jobs if n_jobs is None else n_jobs, len(schedule))
-    typer.echo(f"Sweep: {len(cells)} cells, {cfg.n_runs} runs per group, {workers} worker(s)")
+    emit(f"Sweep: {len(cells)} cells, {cfg.n_runs} runs per group, {workers} worker(s)")
 
     start = time.perf_counter()
     rows: list[dict[str, float | int]] = []
@@ -295,7 +309,7 @@ def run_sweep(
     def collect(stream: Iterable[dict[str, float | int]]) -> None:
         for row in stream:
             rows.append(row)
-            typer.echo(
+            emit(
                 f"[{len(rows):>3}/{len(schedule)}] sigma={row['sigma']:.2f} "
                 f"duration={row['duration']:.0f} seed={row['seed']} "
                 f"auc_var={row['auc_var']:.3f} auc_ar1={row['auc_ar1']:.3f} "
@@ -307,7 +321,7 @@ def run_sweep(
             parallel = Parallel(n_jobs=workers, return_as="generator")
             collect(parallel(delayed(run_cell)(cfg, cell) for cell in schedule))
         except (OSError, ImportError, PermissionError) as error:
-            typer.echo(f"Process pool unavailable ({error}); falling back to one worker.")
+            emit(f"Process pool unavailable ({error}); falling back to one worker.")
             rows.clear()
             workers = 1
     if workers == 1:
@@ -316,5 +330,5 @@ def run_sweep(
     sweep = _rows_to_frame(rows)
     path = write_parquet(sweep, target_dir / SWEEP_FILE)
     write_parquet(summarise(sweep, n_boot=cfg.n_boot), target_dir / SUMMARY_FILE)
-    typer.echo(f"Sweep finished in {time.perf_counter() - start:.0f}s -> {path}")
+    emit(f"Sweep finished in {time.perf_counter() - start:.0f}s -> {path}")
     return path

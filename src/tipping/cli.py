@@ -143,7 +143,7 @@ def simulate(
 
 def _do_sweep(config: Path | None, out_dir: Path | None) -> None:
     run_sweep = _load_entry("tipping.sweep", "run_sweep", "sweep")
-    path = run_sweep(config, out_dir)
+    path = run_sweep(config, out_dir, log=typer.echo)
     typer.echo(f"Sweep written to {path}")
 
 
