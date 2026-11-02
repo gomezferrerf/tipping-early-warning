@@ -123,7 +123,7 @@ def test_constant_r_group_has_flat_deterministic_schedule() -> None:
 
 
 def test_main_writes_parquet_and_json(tmp_path: Path) -> None:
-    """main() writes both artefacts with the keys the speech agent reads."""
+    """main() writes both artefacts with the keys the deck build reads."""
     parquet_path, json_path = main(tmp_path, n_runs=20, seeds=(1,), sigma_ends=(0.15,), n_boot=10)
     assert parquet_path.is_file()
     summary = json.loads(json_path.read_text(encoding="utf-8"))

@@ -274,7 +274,7 @@ def load_sweep_config(path: Path | str) -> SweepConfig:
     Returns
     -------
     SweepConfig
-        Validated configuration; missing fields take the defaults of the brief.
+        Validated configuration; missing fields take the documented defaults.
     """
     data = _read_mapping(path)
     nested = data.get("sweep")

@@ -12,7 +12,7 @@ from tipping.theory import ou_acf, ou_ar1, ou_variance, predicted_indicators
 SIGMA = 0.05
 DT = 0.5
 
-# (r, variance, AR(1)) for sigma = 0.05 and dt = 0.5, from the brief.
+# (r, variance, AR(1)) for sigma = 0.05 and dt = 0.5 (hand-computed from the OU formulas).
 REFERENCE = [
     (0.0, 0.000625, 0.3679),
     (-0.2, 0.00095, 0.5175),

@@ -1,4 +1,4 @@
-# Guide for AI coding assistants
+# Contributor guide
 
 ## Purpose
 
@@ -18,7 +18,7 @@ Use `uv`; `just` recipes are shortcuts for the same lines. Must work in PowerShe
 | Baseline run | `uv run tipping simulate` |
 | Reproduce everything | `uv run tipping reproduce` |
 
-Before declaring work done, run ruff check, ruff format --check, mypy and pytest.
+Before declaring work done, run ruff check, ruff format --check, mypy and pytest. Before pushing, also run `UV_PYTHON=3.11 uv run mypy` (PowerShell: `$env:UV_PYTHON="3.11"; uv run mypy`): CI tests Python 3.11, which resolves older NumPy stubs than 3.13 and can reject code that 3.13 accepts.
 
 ## Architecture (`src/tipping`)
 
@@ -61,7 +61,7 @@ Tests encode physics oracles, not snapshots of whatever the code printed. Exampl
 - One colour means one thing, everywhere, through `viz/style.py` (`stable`, `unstable`, `ramp`, `control`; pastel `*_fill` only for fills). Do not hard-code colours in figure code.
 - Do not invent or hand-type results; do not weaken tests to make them pass.
 - Do not use the word "collapse" in titles; use "tipping point". Use "saddle-node bifurcation" for the event and "saddle point" only for the 2D equilibrium type.
-- Commit messages follow Conventional Commits (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`, `ci:`) and carry no AI co-author trailers or tool mentions. Do not rewrite shared history or push unless asked.
+- Commit messages follow Conventional Commits (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`, `ci:`) and carry no co-author trailers or tool mentions. Do not rewrite shared history or push unless asked.
 - Do not edit `docs/assets/*.png` by hand; regenerate them.
 
 ## Regenerating outputs

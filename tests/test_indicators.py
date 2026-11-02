@@ -65,7 +65,7 @@ def test_rolling_variance_equals_naive() -> None:
     rng = np.random.default_rng(1)
     a = rng.standard_normal((60, 4)).cumsum(axis=0) * 0.1 + 1000.0  # large offset on purpose
     fast = rolling_variance(a, 12)
-    slow = _naive_rolling(a, 12, lambda w: np.var(w, ddof=1))
+    slow = _naive_rolling(a, 12, lambda w: float(np.var(w, ddof=1)))
     np.testing.assert_allclose(fast, slow, rtol=1e-8, atol=1e-10)
     assert np.isnan(fast[:11]).all()
     assert np.isfinite(fast[11:]).all()

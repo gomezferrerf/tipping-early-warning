@@ -46,7 +46,7 @@ def small_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return run_sweep(_write_config(tmp), tmp / "out")
 
 
-def test_default_config_matches_brief() -> None:
+def test_default_sweep_config_values() -> None:
     cfg = load_sweep_config(default_sweep_config_path())
     assert cfg.sigmas == [0.03, 0.05, 0.10, 0.15, 0.30]
     assert cfg.durations == [100, 200, 400, 1000, 2000]
