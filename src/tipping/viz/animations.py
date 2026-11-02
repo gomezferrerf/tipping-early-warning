@@ -471,7 +471,7 @@ def animate_bifurcation(
     n_frames = len(r_f)
 
     # Left: landscape.
-    ax_l = fig.add_axes((0.095, 0.20, 0.385, 0.60))
+    ax_l = fig.add_axes((0.095, 0.235, 0.385, 0.565))
     _style_landscape_axes(ax_l, (-1.15, 1.45), lang)
     ax_l.set_title(_text("a1_title_left", lang), fontsize=FONT_TITLE, pad=14)
     xs = np.linspace(*_X_LIM, 400)
@@ -485,7 +485,7 @@ def animate_bifurcation(
     radius_px = 12.0 * dpi / 72.0
 
     # Right: bifurcation diagram (fixed curves) with the moving marker.
-    ax_r = fig.add_axes((0.595, 0.20, 0.385, 0.60))
+    ax_r = fig.add_axes((0.595, 0.235, 0.385, 0.565))
     _plain_axes(ax_r)
     rs = np.linspace(-0.7, 0.45, 900)
     ax_r.plot(rs, upper_branch(rs), color=PALETTE.stable, lw=LINE_W + 0.4, zorder=2)
@@ -507,7 +507,7 @@ def animate_bifurcation(
         0.45, 1.3, _text("stable", lang), color=PALETTE.stable, fontsize=FONT_BASE, ha="right"
     )
     ax_r.text(
-        0.45, -0.95, _text("stable", lang), color=PALETTE.stable, fontsize=FONT_BASE, ha="right"
+        0.45, -1.4, _text("stable", lang), color=PALETTE.stable, fontsize=FONT_BASE, ha="right"
     )
     ax_r.text(
         0.45, 0.25, _text("unstable", lang), color=PALETTE.unstable_text, fontsize=FONT_BASE,
@@ -521,7 +521,7 @@ def animate_bifurcation(
     )  # fmt: skip
     readout = fig.text(0.5, 0.945, "", fontsize=FONT_TITLE + 2, ha="center", va="center")
     fig.text(
-        0.5, 0.035, _text("a1_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
+        0.5, 0.012, _text("a1_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
     )
 
     def update(i: int) -> None:
@@ -664,7 +664,7 @@ def animate_noisy_ball(
         zorder=4, clip_on=False,
     )  # fmt: skip
     caption = fig.text(
-        0.5, 0.02, _text("a2_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
+        0.5, 0.012, _text("a2_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
     )
     caption.set_visible(False)
 
@@ -907,7 +907,7 @@ def animate_rolling_window(
     for ax in (ax_x, ax_v):
         ax.tick_params(labelbottom=False)
     ax_a.set_xlabel(_text("time_axis", lang), fontsize=FONT_LABEL)
-    ax_x.set_ylim(-1.45, 1.3)
+    ax_x.set_ylim(-1.45, 1.6)
     ax_x.set_yticks([-1, 0, 1])
     ax_x.set_ylabel("x", fontsize=FONT_LABEL, rotation=0, labelpad=16)
 
@@ -918,8 +918,8 @@ def animate_rolling_window(
     )  # fmt: skip
     ax_x.add_patch(band)
     win_label = ax_x.text(
-        0.0, 0.07, _text("a3_window", lang), transform=ax_x.get_xaxis_transform(),
-        fontsize=FONT_BASE, color=PALETTE.ramp, ha="left", va="bottom",
+        0.0, 0.97, _text("a3_window", lang), transform=ax_x.get_xaxis_transform(),
+        fontsize=FONT_BASE, color=PALETTE.ramp, ha="left", va="top",
     )  # fmt: skip
     (line_x,) = ax_x.plot(d.t, d.x, color=PALETTE.ramp, lw=LINE_W, zorder=3)
     (head_x,) = ax_x.plot(
@@ -960,7 +960,7 @@ def animate_rolling_window(
     for ax, arts in ((ax_x, [line_x]), (ax_v, arts_v), (ax_a, arts_a)):
         _clip_to_reveal(arts, ax, box)
     fig.text(
-        0.5, 0.02, _text("a3_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
+        0.5, 0.012, _text("a3_caption", lang), ha="center", fontsize=FONT_CAPTION, color=PALETTE.ink
     )
     note = ax_a.text(
         0.99, 0.06, _text("a3_note", lang), transform=ax_a.transAxes, fontsize=FONT_NOTE,
@@ -973,6 +973,7 @@ def animate_rolling_window(
         t_now = s * dt_s
         box.x1 = max(min(t_now / t_axis, 1.0), 1e-4)
         band.set_visible(t_now > 0.0)
+        win_label.set_visible(t_now > 0.0)
         x0 = max(t_now - w_time, 0.0)
         band.set_x(x0)
         band.set_width(t_now - x0)
